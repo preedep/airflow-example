@@ -22,6 +22,7 @@ The DAGs build on each other. Run top to bottom the first time.
 | 2 | `dag_ftps_sensor.py` | sensor in reschedule mode | a file uploaded by #1 |
 | 3 | `dag_ftps_to_sftp_stream_transfer.py` | streaming between two servers | a file uploaded by #1 |
 | 4 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container |
+| 5 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -29,6 +30,9 @@ timeout and the stream transfer fails with "not found".
 
 **#4 is independent** of the FTPS/SFTP chain — it needs only an Azure Blob
 connection and a blob to find.
+
+**#5 needs no connection at all** and is the only scheduled DAG here; the rest are
+manual-trigger only.
 
 ---
 
@@ -221,6 +225,52 @@ pass `delimiter=""` to recurse.
 The sensor pushes matching names to XCom (`matched_blobs`) so the downstream task
 acts on exactly what satisfied it, rather than re-listing and possibly seeing a
 different set.
+
+---
+
+## 5. `dag_cyclic.py`
+
+`nix-dag-cyclic` — a **cyclic job** in the Control-M sense: fires every 5 minutes,
+with only one run ever active. The task sleeps 4 minutes to stand in for real work.
+
+Unlike the others this one is **scheduled**, so just unpause it:
+
+```bash
+airflow dags unpause nix-dag-cyclic
+```
+
+**Pattern: `max_active_runs=1` is what makes a schedule cyclic.** Without it, a run
+that overruns its interval executes concurrently with the next one. With it, the
+next run waits.
+
+```python
+with DAG(
+    schedule="*/5 * * * *",
+    max_active_runs=1,                      # no two runs at once
+    catchup=False,                          # a cycle, not a history
+    dagrun_timeout=timedelta(minutes=9),    # a wedged run must not block the cycle
+):
+```
+
+`dagrun_timeout` matters more than it looks: with `max_active_runs=1`, one hung run
+blocks the cycle indefinitely. The timeout bounds that.
+
+**Where Airflow differs from Control-M**, worth knowing before relying on it:
+
+- Control-M measures the gap from when the previous run *ends*; Airflow's cron fires
+  on wall-clock time regardless.
+- If a run overruns, Airflow **queues** the missed interval rather than skipping it —
+  so the next run may start immediately after, with no gap. `max_active_runs=1`
+  prevents overlap, not catch-up.
+- For "wait N minutes after the previous run finishes", use
+  `schedule=timedelta(minutes=5)` instead. That measures from the previous run —
+  closer to Control-M — but drifts relative to the clock.
+
+Watch the grid view for ~15 minutes: runs should be strictly sequential. Triggering
+manually while one is active shows the new run `queued` until the active one ends.
+
+> Runs **288 times a day** while unpaused, holding a worker for 4 minutes each time.
+> Pause it when you are done.
 
 ---
 
