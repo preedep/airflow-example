@@ -1,0 +1,40 @@
+[project]
+name = "airflow-example"
+version = "0.1.0"
+description = "Airflow 3 DAG demo — validated locally, deployed to g1pro"
+requires-python = "==3.13.*"
+
+# Pinned to the versions installed in the g1pro Airflow image, so a local parse
+# check reflects what the server will actually do. Verified 2026-08-12.
+dependencies = [
+    "apache-airflow==3.2.1",
+    "apache-airflow-providers-standard==1.12.3",
+    "apache-airflow-providers-cncf-kubernetes==10.16.0",
+    "apache-airflow-providers-postgres==6.6.3",
+    "apache-airflow-providers-common-sql==1.34.0",
+    "apache-airflow-providers-http==6.0.2",
+    "requests==2.33.1",
+    "pendulum==3.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.9",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# DAG files must insert sys.path before importing sibling modules, so their
+# dag_utils import cannot sit at the top of the file.
+"dags/*/dag_*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
