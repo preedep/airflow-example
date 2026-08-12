@@ -35,14 +35,11 @@ never needs sudo.
 
 ## Repository Layout
 
-Mirrors the server's DAG folder so `rsync` is a straight copy.
-
 ```
 dags/
-  <project>/            self-contained subfolder — one per DAG group
-    __init__.py         empty marker, required
-    dag_utils.py        task callables + default_args, LOCAL to this folder
-    dag_<name>.py       the DAG definition
+  dag_<name>.py         one standalone file per demo DAG
+scripts/
+  deploy-dag.sh         parse-check + test + rsync to g1pro
 tests/                  parse and integrity tests (run locally)
 .claude/
   skills/               dag-author, dag-deploy, dag-debug
@@ -50,42 +47,50 @@ tests/                  parse and integrity tests (run locally)
   references/           g1pro.md and other deep docs
 ```
 
-`dag_utils.py` is **not shared across subfolders**. Two projects may each define their
-own with different contents. Do not create a common top-level helper module — the
-subfolders are not packages on `sys.path`.
-
 ## DAG Conventions
 
-- One self-contained subfolder per project, always with an empty `__init__.py`.
-- `dag_id` uses the `nix-dag-<name>` convention, e.g. `nix-dag-fx-alert`.
-- File named `dag_<snake_name>.py`.
+**Each demo DAG is a single standalone file.** No subfolders, no shared `dag_utils`
+module, no cross-DAG imports. This is a deliberate constraint: a demo should be
+readable and deployable on its own. Duplicating a small helper between two DAGs is
+preferred over coupling them.
+
+- File named `dag_<snake_name>.py`, directly under `dags/`.
+- `dag_id` uses the `nix-dag-<name>` convention, e.g. `nix-dag-ftps-sensor`.
 - **Classic style** — `with DAG(...)` plus operators. Not the `@dag` decorator; the
   verified working DAGs on this cluster use the context-manager form.
-- Task logic lives in `dag_utils.py` as plain callables and is wired in with
-  `PythonOperator`. Keeps the logic testable without Airflow.
+- Task callables are module-level functions in the same file, wired in with
+  `PythonOperator`.
 - Every DAG sets `dag_id`, `description`, `schedule`, `start_date`, `catchup=False`,
   `tags`, and `default_args`.
+- **`doc_md` is required — on the DAG and on every task.** It renders as Markdown in
+  the UI (Graph → task → Documentation) and is the only in-product explanation an
+  operator gets. A module docstring does *not* count: Airflow only surfaces it if
+  passed explicitly as `doc_md=__doc__`, and it renders as plain text.
+  Put the DAG-level Markdown in a `DAG_DOC_MD` constant **below the imports** —
+  above them it makes ruff flag every import as `E402`.
 - `start_date` is a static `datetime(...)` — never `datetime.now()` or `days_ago`.
 - No secrets in code. Use Airflow Variables, read inside the callable.
 
-### Required sys.path preamble
-
-Subfolders are not on `sys.path`, so a DAG file must insert its own directory before
-importing its siblings. Omitting this is the most common failure — it raises
-`ModuleNotFoundError: No module named 'dag_utils'` in the dag-processor.
-
-```python
-import sys
-from pathlib import Path
-
-_DAGS_DIR = Path(__file__).parent.resolve()
-if str(_DAGS_DIR) not in sys.path:
-    sys.path.insert(0, str(_DAGS_DIR))
-
-from dag_utils import default_args, my_callable
-```
-
 ## Airflow 3.x Rules
+
+**No deprecated APIs.** Airflow 3.2.1 still accepts most 2.x import paths — they are
+shims that warn on attribute access rather than failing. Using them is a build
+failure here, not a warning: `tests/test_dag_integrity.py` enforces it two ways, an
+AST scan for deprecated module paths plus a subprocess parse with `FutureWarning` and
+`DeprecationWarning` raised as errors.
+
+Both are needed. The AST scan catches deprecated imports inside functions and
+branches that never execute during a parse; the runtime parse catches deprecated
+*attribute* access and removed kwargs that no import-path grep can see.
+
+Two traps worth knowing if you touch that test:
+
+- `airflow.operators.python` and friends **import silently** — the warning fires only
+  when you access an attribute. A plain import check proves nothing.
+- Airflow's `DeprecatedImportWarning` subclasses **`FutureWarning`**, not
+  `DeprecationWarning`, and is re-emitted through logging (`py.warnings`), so
+  `warnings.catch_warnings` records nothing. Filtering on `DeprecationWarning` alone
+  silently passes everything.
 
 These parse fine and fail at runtime — get them right:
 
@@ -137,17 +142,18 @@ PG      = "postgres.postgres.svc.cluster.local:5432"
 ## Deploy
 
 ```bash
-rsync -av --exclude='__pycache__' --exclude='*.pyc' ./dags/<project>/ \
-  nickmsft@nixhome-linux-g1pro:/mnt/external-storage/airflow-dags/<project>/
+./scripts/deploy-dag.sh dag_<name>     # or --all
 ```
 
-The dag-processor picks up changes automatically — no pod restart, no sudo. New DAGs
-land **paused**. Then verify with `mcp__airflow__get_import_errors` and
-`mcp__airflow__fetch_dags(dag_id_pattern=...)`. See the `dag-deploy` skill for the
-full sequence.
+Runs connectivity check → parse check → integrity tests → rsync, and refuses to ship
+anything that fails. It never uses `--delete`; the DAG folder is shared with other
+projects.
 
-The DAG folder is shared with other projects. Only ever rsync into your own project
-subfolder — never the root, never with `--delete`.
+The dag-processor picks up changes automatically — no pod restart, no sudo, ~30s to
+register. New DAGs land **paused**. Verify with `mcp__airflow__get_import_errors`
+then `mcp__airflow__get_dag(dag_id=...)`; use the exact `dag_id`, since
+`fetch_dags(dag_id_pattern=...)` does not substring-match reliably. See the
+`dag-deploy` skill.
 
 ## Local Validation
 
@@ -155,17 +161,23 @@ subfolder — never the root, never with `--delete`.
 local parse exercises the same import paths the dag-processor will.
 
 ```bash
-uv sync                                       # first time / after dep changes
-.venv/bin/python dags/<project>/dag_<name>.py # parse — exit 0, no output
+uv sync                                   # first time / after dep changes
+.venv/bin/python dags/dag_<name>.py       # parse — exit 0, no output
 .venv/bin/python -m pytest tests/
 .venv/bin/ruff check dags/
 ```
 
-`tests/test_dag_integrity.py` runs over every `dags/*/dag_*.py` automatically — no
-per-DAG test to write. It asserts: subfolder has `__init__.py`, the file imports and
-defines a DAG, the `sys.path` block is present when `dag_utils` is imported, no 2.x
-import paths or `schedule_interval=`, no top-level I/O, and `catchup=False` + tags +
-description are set.
+`tests/test_dag_integrity.py` runs over every `dags/dag_*.py` automatically — no
+per-DAG test to write. It asserts:
+
+- the file imports and defines a DAG
+- it is standalone (no `dag_utils` import)
+- **no deprecated Airflow 2.x modules** (AST scan, covers unexecuted code paths)
+- **parses clean with `FutureWarning`/`DeprecationWarning` as errors** (subprocess)
+- no `schedule_interval=`, no 2.x import paths
+- no top-level I/O
+- `catchup=False`, plus tags and description set
+- **`doc_md` present on the DAG and on every task**
 
 The venv matches the server's Python and Airflow versions but not its full provider
 set. A clean local parse still does not prove a third-party import exists in the
@@ -176,5 +188,5 @@ authoritative check.
 
 - Explicit over clever. Small functions. Write less code.
 - Comments only where the *why* is non-obvious. No docstring walls.
-- Callables log through `logging.getLogger("airflow.task")` with a `[<project>]` prefix.
+- Callables log through `logging.getLogger("airflow.task")` with a `[<dag_name>]` prefix.
 - Callables raise on failure so the task fails visibly; never swallow an exception.

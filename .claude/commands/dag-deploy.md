@@ -1,27 +1,29 @@
 ---
-description: Deploy a DAG subfolder to g1pro via rsync and verify it parsed
+description: Deploy a DAG file to g1pro with scripts/deploy-dag.sh and verify it parsed
 ---
 
-Deploy the DAG project subfolder named in `$ARGUMENTS` to the g1pro cluster.
+Deploy the DAG named in `$ARGUMENTS` (e.g. `dag_ftps_sensor`, or `--all`) to g1pro.
 
-Follow the `dag-deploy` skill. In summary:
+1. **Run the deploy script** — it handles connectivity check, parse check, integrity
+   tests, and rsync, and refuses to ship anything that fails:
 
-1. **Preflight** — `ssh nickmsft@nixhome-linux-g1pro true`, then parse-check every
-   DAG file with `.venv/bin/python dags/$ARGUMENTS/dag_*.py` (exit 0, no output),
-   then `.venv/bin/python -m pytest tests/`. Stop and report if any fail; do not
-   deploy a file that does not parse locally.
-
-2. **Ship** —
    ```bash
-   rsync -av --exclude='__pycache__' --exclude='*.pyc' \
-     ./dags/$ARGUMENTS/ \
-     nickmsft@nixhome-linux-g1pro:/mnt/external-storage/airflow-dags/$ARGUMENTS/
+   ./scripts/deploy-dag.sh $ARGUMENTS
    ```
-   Only into this subfolder. Never the DAG root, never `--delete`.
 
-3. **Verify** — `mcp__airflow__get_import_errors()` first, then
-   `mcp__airflow__fetch_dags(dag_id_pattern=...)` for the DAG(s) in this folder.
+   If it exits non-zero, stop and report the failure. Do not work around it by
+   rsyncing manually.
+
+2. **Verify server-side** — the script does not do this:
+   - `mcp__airflow__get_import_errors()` — must be empty
+   - `mcp__airflow__get_dag(dag_id="<dag_id>")` — confirms registration, shows
+     `is_paused`, `has_import_errors`, tags, and schedule
+
+   Use `get_dag` with the exact `dag_id`, not `fetch_dags(dag_id_pattern=...)` —
+   the pattern filter does not substring-match reliably.
+
+   The dag-processor takes up to ~30s to pick up a new file. If the DAG is absent
+   with no import error, wait one cycle and re-check before investigating.
 
 Report what landed, whether it parsed, and its paused state. Do **not** unpause or
-trigger — leave that to the user unless they explicitly asked for it in
-`$ARGUMENTS`.
+trigger unless `$ARGUMENTS` explicitly asked for it.

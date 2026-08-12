@@ -28,13 +28,13 @@ Most common causes on this cluster:
 
 | Traceback | Cause |
 |---|---|
-| `ModuleNotFoundError: No module named 'dag_utils'` | missing `_DAGS_DIR` `sys.path` insert |
+| `ModuleNotFoundError` on a sibling module | demo DAGs must be standalone single files |
 | `ModuleNotFoundError` on a 3rd-party lib | not in the Airflow image — cannot pip-install into a worker |
 | `ImportError` from `airflow.operators.*` | 2.x path; use `airflow.providers.standard.*` |
 | `ImportError` from `airflow.models import Variable` | use `airflow.sdk` |
 | `TypeError: unexpected keyword 'schedule_interval'` | removed in 3.x, use `schedule` |
 
-Reproduce locally with `python dags/<project>/dag_<name>.py` — except for the
+Reproduce locally with `.venv/bin/python dags/dag_<name>.py` — except for the
 missing-package cases, which only reproduce on the server.
 
 ## 2. Does the scheduler know it?
@@ -48,7 +48,7 @@ Always filter — the cluster hosts ~106 DAGs including Airflow's bundled exampl
 
 - **Missing, no import error** → the file never landed, or the processor has not
   parsed it. Confirm on disk:
-  `ssh nickmsft@nixhome-linux-g1pro "ls -la /mnt/external-storage/airflow-dags/<project>/"`
+  `ssh nickmsft@nixhome-linux-g1pro "ls -la /mnt/external-storage/airflow-dags/"`
   Then force a reparse: `mcp__airflow__reparse_dag_file(file_token=...)` — the token
   comes from `fetch_dags`, not a path.
 - **Present but never runs** → check `is_paused`. New DAGs are paused by default and

@@ -110,6 +110,7 @@ dependencies = [
     { name = "apache-airflow" },
     { name = "apache-airflow-providers-cncf-kubernetes" },
     { name = "apache-airflow-providers-common-sql" },
+    { name = "apache-airflow-providers-ftp" },
     { name = "apache-airflow-providers-http" },
     { name = "apache-airflow-providers-postgres" },
     { name = "apache-airflow-providers-standard" },
@@ -128,6 +129,7 @@ requires-dist = [
     { name = "apache-airflow", specifier = "==3.2.1" },
     { name = "apache-airflow-providers-cncf-kubernetes", specifier = "==10.16.0" },
     { name = "apache-airflow-providers-common-sql", specifier = "==1.34.0" },
+    { name = "apache-airflow-providers-ftp", specifier = "==3.14.3" },
     { name = "apache-airflow-providers-http", specifier = "==6.0.2" },
     { name = "apache-airflow-providers-postgres", specifier = "==6.6.3" },
     { name = "apache-airflow-providers-standard", specifier = "==1.12.3" },
@@ -331,6 +333,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/af/50/72a14c0f873ce564103896d66eb3511f357ea947edfde9dd573e553653ee/apache_airflow_providers_common_sql-1.34.0.tar.gz", hash = "sha256:6cfe05d53680a9d712ef02186cce8beb6bb007e6e4bcc5e04b01db6e28073d0c", size = 130594, upload-time = "2026-03-28T10:59:15.989Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2d/95/5c32f02528ad54917ced33aff9ce8f375f859b9f936a9ffdccef0e77bba9/apache_airflow_providers_common_sql-1.34.0-py3-none-any.whl", hash = "sha256:7f192477322ddb728c3f7dfae9b2b8c45b45dfee3e9cd8f5396d6a842884ac04", size = 92136, upload-time = "2026-03-28T10:57:20.608Z" },
+]
+
+[[package]]
+name = "apache-airflow-providers-ftp"
+version = "3.14.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-airflow" },
+    { name = "apache-airflow-providers-common-compat" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/7a/176e6f4d24b22e8852ec921db695e676d9b9deaa7eb69e20a54f59682d0f/apache_airflow_providers_ftp-3.14.3.tar.gz", hash = "sha256:1025416571fe3252504e18b45a1a41e01f6668b504775ff14e8caac318f1d336", size = 68519, upload-time = "2026-04-12T14:22:03.079Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/31/6b4997fc78eec0d38d84725220e8f660f02ce3bfce14e3cd7b1221e2f1ee/apache_airflow_providers_ftp-3.14.3-py3-none-any.whl", hash = "sha256:3e76b60d8b2750faa061ca73438cb7c6597bb5db6b00ebee83cea0d413ce7b20", size = 20226, upload-time = "2026-04-12T14:20:18.376Z" },
 ]
 
 [[package]]

@@ -1,55 +1,62 @@
 ---
 name: dag-author
-description: Write a new Airflow 3 DAG or modify an existing one in this repo, using the self-contained subfolder + dag_utils pattern verified on the g1pro cluster. Use when the user asks to create a DAG, add a pipeline, add tasks, or port an Airflow 2 DAG.
+description: Write a new Airflow 3 DAG or modify an existing one in this repo as a standalone single file. Use when the user asks to create a DAG, add a pipeline, add tasks, or port an Airflow 2 DAG.
 ---
 
 # Authoring a DAG
 
-Target is Airflow 3.2.1 on KubernetesExecutor. The pattern below mirrors
-`investment/dag_nix_dag_fx_alert.py`, which runs successfully on this cluster today —
-follow it rather than generic Airflow examples from the web, which are mostly 2.x.
+Target is Airflow 3.2.1 on KubernetesExecutor. Follow the pattern below rather than
+generic Airflow examples from the web, which are mostly 2.x.
 
 Read `.claude/references/g1pro.md` §6–§8 for the environment rules behind this.
 
-## 1. Create the subfolder
+## 1. One file, standalone
 
-Every DAG project is a self-contained folder under `dags/`:
+**Each demo DAG is a single self-contained file** at `dags/dag_<name>.py`. No
+subfolders, no shared `dag_utils` module, no cross-DAG imports — this is a deliberate
+constraint so each demo reads and deploys on its own. If two DAGs need the same small
+helper, duplicate it rather than coupling them.
 
-```
-dags/mydemo/
-  __init__.py          empty file — required
-  dag_utils.py         task callables + default_args
-  dag_my_pipeline.py   the DAG
-```
+Task callables are module-level functions in the same file.
 
-Do not put a bare `.py` at the top of `dags/`, and do not try to share a helper module
-across subfolders — they are not packages on `sys.path`.
+## 2. Write the DAG
 
-## 2. Write `dag_utils.py`
-
-Task logic lives here as plain functions. This is what makes it testable without
-Airflow, and it keeps the DAG file to structure only.
+**`doc_md` is mandatory** — on the DAG and on every task. It renders as Markdown in
+the UI and is enforced by `tests/test_dag_integrity.py`. Keep the DAG-level Markdown
+in a `DAG_DOC_MD` constant placed **after the imports**; putting it before them makes
+ruff report every import as `E402`.
 
 ```python
-"""Shared helpers for mydemo DAGs."""
+"""nix-dag-mydemo — example pipeline."""
 
 import logging
+from datetime import datetime, timedelta
 
-log = logging.getLogger(__name__)
+from airflow import DAG
+from airflow.providers.standard.operators.python import PythonOperator
+
+DAG_DOC_MD = """
+### nix-dag-mydemo
+
+What it does, in a sentence.
+
+#### Trigger
+Manual only. Pass conf: `{"endpoint": "https://..."}`
+
+#### Requires
+| Kind | Name | Purpose |
+|---|---|---|
+| Connection | `my_conn` | ... |
+"""
 
 
-def default_args(owner="nix", retries=1, retry_delay_sec=30, **kwargs):
-    args = {"owner": owner, "retries": retries, "retry_delay_sec": retry_delay_sec}
-    args.update(kwargs)
-    return args
-
-
-def fetch_data(endpoint, **context):
+def fetch_data(**context):
     import requests                                    # import inside the callable
 
     task_log = logging.getLogger("airflow.task")
-    task_log.info("[mydemo] fetching %s", endpoint)
+    endpoint = (context["dag_run"].conf or {}).get("endpoint", "https://api.example.com/v1")
 
+    task_log.info("[mydemo] fetching %s", endpoint)
     response = requests.get(endpoint, timeout=10)
     response.raise_for_status()                        # raise → task fails visibly
     return response.json()                             # return value → XCom
@@ -60,79 +67,94 @@ def process_data(ti=None, **context):
     data = ti.xcom_pull(task_ids="fetch_data")
     task_log.info("[mydemo] processing: %s", data)
     return {"status": "ok"}
-```
 
-Conventions: import heavy modules inside the function; log via
-`logging.getLogger("airflow.task")` with a `[<project>]` prefix; always set a `timeout`
-on network calls; raise rather than return an error.
-
-## 3. Write the DAG file
-
-```python
-"""
-nix-dag-mydemo — example pipeline.
-Lives at: /opt/airflow/dags/mydemo/
-"""
-
-import sys
-from datetime import datetime
-from pathlib import Path
-
-from airflow import DAG
-from airflow.providers.standard.operators.python import PythonOperator
-
-_DAGS_DIR = Path(__file__).parent.resolve()
-if str(_DAGS_DIR) not in sys.path:
-    sys.path.insert(0, str(_DAGS_DIR))
-
-from dag_utils import default_args, fetch_data, process_data
 
 with DAG(
     dag_id="nix-dag-mydemo",
     description="Example demo pipeline",
-    schedule="0 */6 * * *",          # None = manual trigger only
+    schedule=None,                   # None = manual trigger only
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=["demo", "mydemo"],
-    default_args=default_args(owner="nix"),
+    default_args={"owner": "nix", "retries": 1, "retry_delay": timedelta(seconds=30)},
+    doc_md=DAG_DOC_MD,
 ) as dag:
     fetch = PythonOperator(
         task_id="fetch_data",
         python_callable=fetch_data,
-        op_kwargs={"endpoint": "https://api.example.com/v1/data"},
+        doc_md="Fetches the payload and pushes it to XCom.",
     )
-
     process = PythonOperator(
         task_id="process_data",
         python_callable=process_data,
+        doc_md="Pulls the payload from XCom and processes it.",
     )
 
     fetch >> process
 ```
 
-The `_DAGS_DIR` block is mandatory. Without it the dag-processor raises
-`ModuleNotFoundError: No module named 'dag_utils'`.
+Conventions: import heavy modules inside the callable; log via
+`logging.getLogger("airflow.task")` with a `[<name>]` prefix; always set a `timeout`
+on network calls; raise rather than return an error.
+
+## 3. Sensors
+
+Always `mode="reschedule"` with an explicit `poke_interval` and `timeout`.
+`mode="poke"` holds a worker pod for the entire wait — on KubernetesExecutor that is a
+pod sitting idle for hours.
+
+```python
+from airflow.providers.ftp.sensors.ftp import FTPSSensor
+
+wait = FTPSSensor(
+    task_id="wait_for_file",
+    ftp_conn_id="ftps_test_001",
+    path="/upload/{{ dag_run.conf.get('filename', 'probe.txt') }}",
+    mode="reschedule",
+    poke_interval=60,
+    timeout=60 * 60,
+)
+```
+
+A sensor without a `timeout` waits forever and blocks `max_active_runs`.
+`dags/dag_ftps_sensor.py` is a working example.
 
 ## 4. Rules that break naive code
 
-**Import paths (3.x).**
+**No deprecated APIs — enforced, not advisory.** The 2.x paths still *work* in 3.2.1
+as warning shims, so they parse fine and even run. The integrity tests fail the build
+on them anyway. Do not reach for one because "it imports".
+
 ```python
 from airflow.providers.standard.operators.python import PythonOperator   # ✅
 from airflow.providers.standard.operators.bash import BashOperator       # ✅
-from airflow.sdk import Variable                                         # ✅
-from airflow.operators.python import PythonOperator                      # ❌ 2.x
+from airflow.providers.standard.sensors.python import PythonSensor       # ✅
+from airflow.sdk import Variable, Connection                             # ✅
+
+from airflow.operators.python import PythonOperator                      # ❌ deprecated shim
+from airflow.sensors.python import PythonSensor                          # ❌ deprecated shim
+from airflow.utils.dates import days_ago                                 # ❌ deprecated
+from airflow.utils.operator_helpers import determine_kwargs              # ❌ → airflow.sdk.bases.decorator
 from airflow.models import Variable                                      # ❌ fails in worker pods
 ```
+
+Rule of thumb: anything under `airflow.operators.*`, `airflow.sensors.*`, or
+`airflow.hooks.*` moved to `airflow.providers.standard.*` in 3.x. `airflow.models`
+is still fine for `DagBag` etc., but `Variable`/`Connection` come from `airflow.sdk`.
 
 **`schedule=`, not `schedule_interval=`.** Removed in 3.x.
 
 **`catchup=False`.** A past `start_date` with catchup on floods the cluster with
 backfill runs on first unpause.
 
-**Package availability.** Only these providers are in the image: `standard`,
-`cncf-kubernetes`, `postgres`, `common-sql`, `common-io`, `http`, `smtp`, `amazon`,
-`microsoft-azure`, `databricks` — plus `requests`. Anything else needs an image
-rebuild and cannot be pip-installed into a worker. Check before importing.
+**Package availability.** ~30 providers are in the image — `standard`, `ftp`, `sftp`,
+`ssh`, `cncf-kubernetes`, `postgres`, `mysql`, `http`, `smtp`, `amazon`, `google`,
+`snowflake`, `slack` and more, plus `requests`. Full list in `CLAUDE.md`. Anything
+outside it needs an image rebuild and cannot be pip-installed into a worker.
+
+The local `.venv` carries only a subset, so add a provider with
+`uv add "apache-airflow-providers-<name>==<server version>"` before parse-checking a
+DAG that imports it.
 
 **In-cluster addresses.** Tasks run inside k3s. Use
 `postgres.postgres.svc.cluster.local:5432`, not `nixhome-linux-g1pro:30080`.
@@ -155,14 +177,14 @@ unbounded pod OOM-kills as `Negsignal.SIGKILL`.
 `.venv` is pinned to Python 3.13 + Airflow 3.2.1 to match the server image.
 
 ```bash
-.venv/bin/python dags/mydemo/dag_my_pipeline.py   # exit 0, no output
+.venv/bin/python dags/dag_<name>.py       # exit 0, no output
 .venv/bin/python -m pytest tests/
 .venv/bin/ruff check dags/
 ```
 
 `tests/test_dag_integrity.py` picks up new DAGs automatically — it globs
-`dags/*/dag_*.py`, so there is no per-DAG test to add. It enforces the rules in §4
-plus the `__init__.py` and `sys.path` requirements.
+`dags/dag_*.py`, so there is no per-DAG test to add. It enforces the rules in §4
+plus the standalone-file requirement.
 
 A clean local parse is necessary but not sufficient: the venv carries only the
 common providers, so it cannot prove a third-party import exists in the server

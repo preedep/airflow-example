@@ -20,58 +20,61 @@ is infrastructure rather than Airflow.
 Environment detail: `.claude/references/g1pro.md` — §5 for deployment, §9b for the
 full MCP tool inventory and usage notes.
 
-## Preflight
+## Deploy — use the script
 
 ```bash
-ssh nickmsft@nixhome-linux-g1pro true && echo OK          # Tailscale up?
-.venv/bin/python dags/<project>/dag_<name>.py             # parse — exit 0, no output
-.venv/bin/python -m pytest tests/
-.venv/bin/ruff check dags/
+./scripts/deploy-dag.sh dag_ftps_sensor      # one DAG
+./scripts/deploy-dag.sh --all                # every dags/dag_*.py
+./scripts/deploy-dag.sh dag_x --no-test      # skip pytest (rarely justified)
 ```
 
-The venv is pinned to Python 3.13 + Airflow 3.2.1 to match the server image.
+`scripts/deploy-dag.sh` does connectivity check → parse check → integrity tests →
+rsync, and **refuses to ship anything that fails**. Prefer it over hand-rolled
+commands; if it exits non-zero, fix the cause rather than rsyncing manually.
 
-If SSH fails, Tailscale is down — start it and retry rather than working around it.
+The venv it parse-checks against is pinned to Python 3.13 + Airflow 3.2.1 to match
+the server image.
 
-## Deploy
+### What it does underneath
 
 ```bash
 rsync -av --exclude='__pycache__' --exclude='*.pyc' \
-  ./dags/<project>/ \
-  nickmsft@nixhome-linux-g1pro:/mnt/external-storage/airflow-dags/<project>/
+  ./dags/dag_<name>.py \
+  nickmsft@nixhome-linux-g1pro:/mnt/external-storage/airflow-dags/
 ```
 
-Sync the whole subfolder, not individual files — `dag_utils.py` and `__init__.py`
-must land alongside the DAG. Always exclude `__pycache__`; stale ARM-built `.pyc`
-files in the shared folder cause confusing parse behavior.
+One file at a time, **never `--delete`** — the folder is shared with other projects
+and `--delete` would wipe everyone else's DAGs. `__pycache__` is excluded because
+stale ARM-built `.pyc` files cause confusing parse behavior on the x86_64 server.
 
-Note the trailing slashes on both paths — without them rsync nests the directory.
-
-The shared folder holds other people's DAGs. Only ever write inside your own project
-subfolder; never rsync to the DAG root and never use `--delete`.
+If SSH fails, Tailscale is down — start it and retry rather than working around it.
 
 ## Verify — via MCP
 
 ```bash
 # File landed
-ssh nickmsft@nixhome-linux-g1pro "ls -la /mnt/external-storage/airflow-dags/<project>/"
+ssh nickmsft@nixhome-linux-g1pro "ls -la /mnt/external-storage/airflow-dags/"
 ```
 
 Then, in order:
 
 1. `mcp__airflow__get_import_errors` — **check this first**; an entry here invalidates
    everything below. Clean looks like `{'import_errors': [], 'total_entries': 0.0}`.
-2. `mcp__airflow__fetch_dags(dag_id_pattern="<dag_id>")` — registered? Also shows
-   `is_paused` and `last_parsed_time`. Always pass a filter: the cluster hosts ~106
-   DAGs including Airflow's bundled examples.
-3. `mcp__airflow__get_dag_details(dag_id=...)` — schedule, tags, owners as intended.
+2. `mcp__airflow__get_dag(dag_id="<exact-dag-id>")` — registered? Returns
+   `is_paused`, `has_import_errors`, `last_parsed_time`, tags, and `file_token`.
+
+Use `get_dag` with the **exact** `dag_id`. `fetch_dags(dag_id_pattern=...)` does not
+substring-match reliably — a deployed, correctly registered DAG returned
+`{'dags': [], 'total_entries': 0.0}` for `dag_id_pattern="ftps"`. If you must list,
+verify against `airflow dags list` before concluding a DAG is missing.
 
 Step 1 is the one that matters. A local parse passes on ARM against locally installed
 packages; the server image may not have the import. This is the authoritative check.
 
-If the DAG is absent with no import error, the processor has not picked it up yet.
-Force a reparse with `mcp__airflow__reparse_dag_file(file_token=...)` — note it takes
-the **`file_token`** from a `fetch_dags` result, not a path.
+**The dag-processor takes up to ~30s** to pick up a new file. Absent with no import
+error usually just means it has not parsed yet — wait a cycle and re-check before
+investigating. To force it: `mcp__airflow__reparse_dag_file(file_token=...)`, which
+takes the `file_token` from a `get_dag` result, not a path.
 
 ## Enable and run — via MCP
 
@@ -109,7 +112,7 @@ kubectl -n airflow get pods -w
 Re-rsync the previous version of the folder, or delete the file on the server:
 
 ```bash
-ssh nickmsft@nixhome-linux-g1pro "rm /mnt/external-storage/airflow-dags/<project>/dag_<name>.py"
+ssh nickmsft@nixhome-linux-g1pro "rm /mnt/external-storage/airflow-dags/dag_<name>.py"
 ```
 
 Pause the DAG before removing its file if runs may be in flight. Deleting the file
@@ -118,15 +121,14 @@ removes the DAG from the UI but leaves its run history in the metadata DB.
 ## Quick reference
 
 ```bash
-# 1. Ship the files (rsync only — MCP cannot write files)
-rsync -av --exclude='__pycache__' ./dags/mydemo/ \
-  nickmsft@nixhome-linux-g1pro:/mnt/external-storage/airflow-dags/mydemo/
+# 1. Ship (script handles preflight + rsync; MCP cannot write files)
+./scripts/deploy-dag.sh dag_mydemo
 ```
 
 ```
 # 2. Verify, enable, run (MCP)
 mcp__airflow__get_import_errors()
-mcp__airflow__fetch_dags(dag_id_pattern="nix-dag-mydemo")
+mcp__airflow__get_dag(dag_id="nix-dag-mydemo")
 mcp__airflow__unpause_dag(dag_id="nix-dag-mydemo")
 mcp__airflow__post_dag_run(dag_id="nix-dag-mydemo")
 ```

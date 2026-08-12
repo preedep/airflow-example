@@ -4,10 +4,11 @@ Reference document for AI coding agents working in the **`airflow-demo`** projec
 It describes how to reach the shared home-lab server (`g1pro`), transfer files to it, and deploy Airflow DAGs.
 
 > **Scope:** this file documents the *target environment*, not the `airflow-demo` codebase itself.
-> Everything below was verified against the live server on **2026-08-12** unless marked `NOT DEPLOYED`.
+> Everything below was verified against the live server on **2026-08-12**.
 
 > **Credentials live in `g1pro.secrets.md`** — same directory, gitignored, local only. This file is
-> safe to commit. When adding a new credential, put the value there and reference it from here.
+> committed, so it must never carry a credential value. When adding one, put the value there and
+> reference it from here.
 
 ---
 
@@ -79,35 +80,59 @@ is world-writable.
 
 ## 3. FTPS Access
 
-> ### ⚠️ NOT DEPLOYED
-> As of **2026-08-12**, vsftpd is **not installed** on g1pro. `systemctl is-active vsftpd` returns
-> `inactive`, the package is absent, and `/mnt/external-storage/ftp` does not exist.
-> The deploy script exists but has **not been run** — it needs an interactive sudo password.
+> ### ⚠️ LIVE, but passive data channel is blocked from the Mac mini (2026-08-12)
+> Control channel verified working: TLS 1.3 (`TLS_AES_256_GCM_SHA384`), cert validates
+> against `~/.certs/g1pro-ftps.crt`, `230 Login successful`, `200 PROT now Private`.
 >
-> **Use SFTP (§2) instead.** The values below describe the *intended* configuration and will be
-> correct only after deployment. Do not write code that depends on FTPS until this section's
-> warning is removed.
+> **Data transfers fail.** vsftpd correctly answers `229 Entering Extended Passive Mode
+> (|||30028|)`, but ports `30000-30100` are unreachable over both LAN and Tailscale —
+> curl reports `Bad PASV/EPSV response: 200`. vsftpd's own config is right
+> (`pasv_enable=YES`, `pasv_min_port=30000`, `pasv_max_port=30100`), so this is a host
+> firewall rule. Fix from a real terminal (needs interactive sudo):
+>
+> ```bash
+> ssh -t nickmsft@nixhome-linux-g1pro "sudo ufw allow 30000:30100/tcp"
+> ```
+>
+> Re-verify with the curl commands below before trusting any FTPS transfer.
+>
+> SFTP (§2) remains the better default for routine transfers — single port, no
+> passive range. Use FTPS when the client specifically requires FTP-over-TLS.
 
-**To deploy** (run from the Mac mini in the `home-second-brain` repo — prompts for g1pro sudo password):
-
-```bash
-FTP_PASSWORD='<choose-a-password>' ./scripts/deploy-ftps.sh
-```
-
-### Intended configuration (post-deployment)
+### Configuration
 
 | Field | Value |
 |---|---|
 | Host | `nixhome-linux-g1pro` or `192.168.101.19` |
 | Control port | `21` |
 | Mode | **Explicit FTPS (FTPES)** — TLS required for login *and* data |
+| TLS versions | **1.2 and 1.3 only** (1.0/1.1 and SSLv2/v3 disabled) |
 | User | `ftpuser` |
-| Password | set via `FTP_PASSWORD` at deploy time — **not stored in any repo** |
+| Password | set via `FTP_PASSWORD` at deploy time — value in `g1pro.secrets.md` (gitignored) |
 | Passive ports | `30000-30100/tcp` |
 | Chroot root | `/mnt/external-storage/ftp` — **read-only** |
 | Writable dir | `/mnt/external-storage/ftp/upload` |
-| TLS cert | self-signed, `/etc/ssl/private/vsftpd.pem` |
+| TLS cert | self-signed, `/etc/ssl/private/vsftpd.pem`, valid to **2036-08-09** |
+| Cert CN / SAN | `CN=nixhome-linux-g1pro`; SAN `DNS:nixhome-linux-g1pro`, `IP:192.168.101.19`, `IP:100.86.171.43` |
 | Cert copy on Mac | `~/.certs/g1pro-ftps.crt` |
+| vsftpd version | 3.0.5 |
+
+**Redeploy / change password** (run from a **real terminal** — needs interactive sudo, see §3 notes):
+
+```bash
+FTP_PASSWORD='<password>' ./scripts/deploy-ftps.sh
+```
+
+### Verified security boundaries
+
+Each of these was tested against the live server:
+
+| Boundary | Test result |
+|---|---|
+| `ftpuser` cannot SSH in | `Permission denied (publickey,password)` |
+| Cannot write to chroot root `/` | `553 Failed FTP upload` |
+| Plaintext FTP rejected | `530 Access denied` — TLS is mandatory |
+| Other accounts (e.g. `nickmsft`) blocked from FTP | `530` — allowlist is `ftpuser` only |
 
 **Two constraints that break naive code:**
 
@@ -116,11 +141,14 @@ FTP_PASSWORD='<choose-a-password>' ./scripts/deploy-ftps.sh
 2. **The cert is self-signed.** Clients must pass `--insecure` (curl) / accept-on-first-use
    (FileZilla), or verify explicitly with `--cacert ~/.certs/g1pro-ftps.crt`.
 
-### Usage (once deployed)
+### Usage
+
+Prefer `--cacert` over `--insecure` — the cert is self-signed but valid, with correct
+SANs, so real verification works and costs nothing.
 
 ```bash
 # Upload
-curl --ftp-ssl --insecure -T ./file.txt \
+curl --ftp-ssl --cacert ~/.certs/g1pro-ftps.crt -T ./file.txt \
   ftp://nixhome-linux-g1pro/upload/ --user 'ftpuser:<password>'
 
 # List
@@ -131,6 +159,49 @@ curl --ftp-ssl --insecure --list-only \
 curl --ftp-ssl --insecure -O \
   ftp://nixhome-linux-g1pro/upload/file.txt --user 'ftpuser:<password>'
 ```
+
+### Airflow Connection for FTPS
+
+Create it in the UI (Admin → Connections) with these values:
+
+| Field | Value |
+|---|---|
+| Connection ID | `ftps_test_001` |
+| Connection Type | **`FTP`** — there is no separate FTPS type |
+| Host | `192.168.101.19` |
+| Login | `ftpuser` |
+| Password | see `g1pro.secrets.md` |
+| Port | `21` |
+| Schema | *(empty)* |
+| Extra | `{"passive": true}` |
+
+**`FTP` is the correct connection type.** `apache-airflow-providers-ftp` 3.14.3 registers
+`conn_type = "ftp"` for *both* `FTPHook` and `FTPSHook` — there is no `FTPS` entry in the
+dropdown by design. TLS is chosen in DAG code by which hook you import:
+
+```python
+from airflow.providers.ftp.hooks.ftp import FTPSHook   # TLS
+hook = FTPSHook(ftp_conn_id="ftps_test_001")
+hook.store_file("/upload/file.txt", "/tmp/file.txt")
+```
+
+**Three constraints specific to this server:**
+
+1. **Host must be the LAN IP, not the Tailscale name.** Tasks run in ephemeral k3s pods
+   which are not on the tailnet; `nixhome-linux-g1pro` will not resolve there. vsftpd is a
+   host service, so there is no `.svc.cluster.local` name either.
+2. **`FTPSHook` hardcodes `ssl.create_default_context()`** with no extra to override it.
+   Against this self-signed cert that raises `CERTIFICATE_VERIFY_FAILED`. Either add
+   `/etc/ssl/private/vsftpd.pem` to the Airflow image's trust store, or subclass the hook
+   and override `get_conn()` with an unverified context.
+3. **Passive ports must be reachable from the pod network** — see the §3 warning; they are
+   currently blocked even from the Mac.
+
+Store the password as an Airflow Variable (`ftps_password`), not in DAG code — worker pods
+cannot read `g1pro.secrets.md`.
+
+Given (2) and (3), **SFTP is the lower-friction choice for DAGs today**: key auth, one port,
+no cert handling, and `apache-airflow-providers-sftp` 5.7.3 is already installed.
 
 **Python (`ftplib`, explicit TLS):**
 
@@ -437,21 +508,11 @@ Heavy imports at module scope slow every DAG parse cycle. Put them inside the ta
 
 ### Available providers
 
-> **Updated 2026-08-12** — re-verified via `pip list` in the webserver pod. The image ships
-> considerably more than originally listed here. Authoritative list is in the project `CLAUDE.md`.
+Installed in the custom Airflow image: `cncf-kubernetes`, `postgres`, `microsoft-azure`, `amazon`,
+`databricks`, `smtp`, `common-sql`, `common-io`, `http`, `standard`.
 
-`standard` · `cncf-kubernetes` · `postgres` · `mysql` · `common-sql` · `common-io` ·
-`common-compat` · `common-messaging` · `http` · `smtp` · `ssh` · `sftp` · `ftp` · `amazon` ·
-`google` · `microsoft-azure` · `microsoft-psrp` · `databricks` · `snowflake` · `elasticsearch` ·
-`redis` · `celery` · `docker` · `git` · `grpc` · `hashicorp` · `odbc` · `openlineage` · `slack` ·
-`fab`
-
-**`requests` 2.33.1 and `pendulum` 3.2.0 are available.** Anything outside this list requires
-rebuilding the Airflow image — it cannot be `pip install`ed into a running worker. Re-check with:
-
-```bash
-kubectl -n airflow exec deploy/airflow-webserver -- python -m pip list
-```
+**`requests` is available.** Anything outside this list requires rebuilding the Airflow image —
+it cannot be `pip install`ed into a running worker.
 
 ---
 
@@ -551,29 +612,11 @@ After `rsync`-ing DAG files (§5), everything else is an MCP call:
 | Set a secret | `create_variable` / `update_variable` |
 | Re-run a failed task | `clear_task_instances` |
 
-### Usage notes for this project
-
-- **Always filter `fetch_dags`.** The cluster hosts ~106 DAGs, most of them Airflow's bundled
-  examples. Use `dag_id_pattern="nix-dag-"` or `tags=[...]`; an unfiltered call buries your DAG.
-- **`reparse_dag_file` takes a `file_token`, not a path.** Get it from the `file_token` field of a
-  `fetch_dags` / `get_dag` result.
-- **`get_log` needs all four args** — `dag_id`, `dag_run_id`, `task_id`, `task_try_number`. It
-  works after the worker pod is gone, unlike `kubectl logs` on an ephemeral pod.
-- **Read try 1 first.** A task that fails differently on retry is not idempotent — that difference
-  is the finding.
-- **Some tools carry 2.x parameters.** `post_dag_run` / `get_dag_runs` still accept
-  `execution_date`; on 3.x prefer `logical_date`. Note `logical_date` is **null** for manually
-  triggered and asset-triggered runs.
-- **Shared cluster.** Write tools (`post_dag_run`, `clear_task_instances`, `pause_dag`,
-  `delete_dag`) do real work on DAGs that may not be yours. Confirm with the user before
-  triggering or clearing anything with external side effects, and never touch another project's
-  DAG.
-
 ### Known issues
 
 | Symptom | Cause | Workaround |
 |---|---|---|
-| `get_health` → `404 API route not found` | Tool targets a legacy route removed in Airflow 3.2.1 | Use `get_version` instead — it works and proves connectivity *(independently confirmed 2026-08-12)* |
+| `get_health` → `404 API route not found` | Tool targets a legacy route removed in Airflow 3.2.1 | Use `get_version` instead — it works and proves connectivity |
 | Pod has **79 restarts** | Liveness probe `timeoutSeconds: 1` is too tight; a busy pod misses the TCP check and gets killed | Cosmetic — the pod self-recovers and serves fine. To fix properly, raise `timeoutSeconds` to `5` in `k8s/airflow-mcp/deployment.yaml` |
 | Session errors on repeat calls | HTTP transport needs the `mcp-session-id` header from `initialize` | Any real MCP client handles this automatically |
 
@@ -700,7 +743,7 @@ scp ./file.txt nickmsft@nixhome-linux-g1pro:/mnt/external-storage/
 | Airflow MCP | `http://nixhome-linux-g1pro:30700/mcp` — **live, no auth, 68 tools** (§9b) |
 | DAG deploy target | `nickmsft@nixhome-linux-g1pro:/mnt/external-storage/airflow-dags/` |
 | SFTP | `nickmsft@nixhome-linux-g1pro` — **SSH key, no password** |
-| FTPS | `ftpuser@nixhome-linux-g1pro:21` — **NOT DEPLOYED YET** (§3) |
+| FTPS | `ftpuser@nixhome-linux-g1pro:21` — **live**, explicit TLS, upload to `/upload/` (§3) |
 
 ---
 
