@@ -255,6 +255,32 @@ with DAG(
 `dagrun_timeout` matters more than it looks: with `max_active_runs=1`, one hung run
 blocks the cycle indefinitely. The timeout bounds that.
 
+**Pattern: there is no timeout callback — a timeout arrives as a failure.** To log
+one distinctly you have to identify it yourself, at two levels:
+
+```python
+def on_task_timeout_or_failure(context):
+    if isinstance(context.get("exception"), AirflowTaskTimeout):
+        log.error("[cyclic][TIMEOUT] %s exceeded execution_timeout", ...)
+    else:
+        log.error("[cyclic][FAILED] %s failed: %s", ...)
+```
+
+| Layer | Setting | Callback fires when |
+|---|---|---|
+| Task | `execution_timeout=6min` | one task overruns → raises `AirflowTaskTimeout` |
+| DAG run | `dagrun_timeout=9min` | the whole run overruns |
+
+Both are needed. A `dagrun_timeout` kills the run **without** failing an individual
+task, so the task callback may never fire — the DAG-level `on_failure_callback` is
+the backstop. It infers a timeout by comparing the run's duration against
+`dagrun_timeout`, because the context carries no explicit "timed out" flag.
+
+Import `AirflowTaskTimeout` from **`airflow.sdk.exceptions`**; the
+`airflow.exceptions` path is deprecated in 3.x.
+
+Grep logs for `[cyclic][TIMEOUT]` to find blocked cycles.
+
 **Where Airflow differs from Control-M**, worth knowing before relying on it:
 
 - Control-M measures the gap from when the previous run *ends*; Airflow's cron fires

@@ -4,9 +4,18 @@ Working **Apache Airflow 3.x** DAG examples, with the project scaffolding that k
 them honest: pinned local environment, integrity tests, and a deploy script that
 refuses to ship a broken DAG.
 
-The examples cover file-transfer patterns — FTPS upload, waiting on a file with a
-sensor, streaming between two servers, and extending a provider sensor for Azure
-Blob Storage.
+## The examples
+
+| DAG | Pattern it demonstrates |
+|---|---|
+| `dag_ftps_simple_transfer` | use a provider operator; subclass it to swap the hook |
+| `dag_ftps_sensor` | sensors in `reschedule` mode, with a timeout |
+| `dag_ftps_to_sftp_stream_transfer` | stream between two servers in one task, no temp file |
+| `dag_wasb_prefix_suffix_sensor` | extend a provider sensor; filter server-side |
+| `dag_cyclic` | non-overlapping scheduled runs, and timeout callbacks |
+
+Each is a single standalone file. **[→ dags/README.md](dags/README.md)** covers what
+they do, the order to run them in, and the connections to create first.
 
 ## Repository layout
 
@@ -20,9 +29,6 @@ scripts/
 tests/
   test_dag_integrity.py  repo-wide checks, applied to every DAG
 ```
-
-**[→ dags/README.md](dags/README.md)** explains what each DAG demonstrates, the order
-to run them in, and the connections and variables to create first.
 
 ## Quick start
 
