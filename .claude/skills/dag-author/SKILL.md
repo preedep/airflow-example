@@ -10,6 +10,23 @@ generic Airflow examples from the web, which are mostly 2.x.
 
 Read `.claude/references/g1pro.md` §6–§8 for the environment rules behind this.
 
+## 0. `dags/` is shared outside this team
+
+DAG files, their `doc_md`, and `dags/README.md` go to teams running **their own
+Airflow**. Keep everything under `dags/` environment-neutral: no hostnames, LAN IPs,
+usernames, host paths, or pointers to `g1pro.md`. Write "the FTPS server", not the
+machine name. Connection/Variable *names* are fine — pick neutral ones
+(`ftps_test_001`), not machine names.
+
+After writing a DAG:
+
+```bash
+grep -rnE "nixhome|192\.168|nickmsft|external-storage|Tailscale|g1pro" dags/
+```
+
+Then add the DAG to `dags/README.md` — run order, what it demonstrates, what it
+depends on.
+
 ## 1. One file, standalone
 
 **Each demo DAG is a single self-contained file** at `dags/dag_<name>.py`. No

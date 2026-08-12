@@ -1,4 +1,4 @@
-"""nix-dag-ftps-sensor — wait for a file to land on the g1pro FTPS server."""
+"""nix-dag-ftps-sensor — wait for a file to land on the FTPS server."""
 
 
 import ftplib
@@ -14,7 +14,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 DAG_DOC_MD = """
 ### nix-dag-ftps-sensor
 
-Waits for a file to appear on the **g1pro FTPS server**, then reports its size
+Waits for a file to appear on the **FTPS server**, then reports its size
 and modification time.
 
 #### Trigger
@@ -25,8 +25,8 @@ Manual only (`schedule=None`). Pass the filename in the run conf:
 {"filename": "myfile.txt"}
 ```
 
-Defaults to `probe.txt` when no conf is given. Only `/upload` is writable —
-vsftpd chroots `ftpuser` and the chroot root is mode `555`.
+Defaults to `probe.txt` when no conf is given. The path is inside the FTPS
+user's chroot — typically only a subdirectory such as `/upload` is writable.
 
 #### Sensor behaviour
 
@@ -52,7 +52,7 @@ omits; without it the data channel is transferred in plaintext.
 | Kind | Name | Purpose |
 |---|---|---|
 | Connection | `ftps_test_001` | host, login, password, port (conn type `FTP`) |
-| Variable | `ftps_ca_cert` | PEM of `/etc/ssl/private/vsftpd.pem` |
+| Variable | `ftps_ca_cert` | PEM of the FTPS server's CA certificate |
 
 There is no `FTPS` connection type — the `ftp` provider registers `conn_type="ftp"`
 for both hooks. TLS is selected by importing `FTPSHook`, not by the connection.
@@ -60,13 +60,13 @@ for both hooks. TLS is selected by importing `FTPSHook`, not by the connection.
 
 FTPS_CONN_ID = "ftps_test_001"
 
-# vsftpd chroots ftpuser; the chroot root is read-only (mode 555) and only
-# /upload is writable. See g1pro.md §3.
+# The FTPS user is chrooted and the chroot root is read-only; only /upload
+# accepts writes.
 REMOTE_PATH = "/upload/{{ dag_run.conf.get('filename', 'probe.txt') }}"
 
 
 class MyFTPSHook(FTPSHook):
-    """FTPSHook that trusts the g1pro self-signed CA and encrypts data transfers."""
+    """FTPSHook that trusts a private CA and encrypts data transfers."""
 
     def get_conn(self) -> ftplib.FTP:
         from airflow.sdk import Variable
@@ -114,7 +114,7 @@ def report_arrival(**context):
 
 with DAG(
     dag_id="nix-dag-ftps-sensor",
-    description="Wait for a file on the g1pro FTPS server, then report it",
+    description="Wait for a file on the FTPS server, then report it",
     schedule=None,  # manual trigger only
     start_date=datetime(2026, 1, 1),
     catchup=False,

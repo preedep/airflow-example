@@ -1,3 +1,4 @@
-hello from g1pro
-This file lives on the server at /mnt/external-storage/airflow-dags/files/probe.txt
-and is mounted into every Airflow pod at /opt/airflow/dags/files/probe.txt.
+Sample payload for the Airflow FTPS/SFTP transfer demos.
+
+This file lives in dags/files/ and is deployed alongside the DAGs, so it is
+readable from every worker pod at <AIRFLOW_HOME>/dags/files/probe.txt.

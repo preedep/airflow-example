@@ -37,6 +37,7 @@ never needs sudo.
 
 ```
 dags/
+  README.md             how to run the examples — written for an outside reader
   dag_<name>.py         one standalone file per demo DAG
   files/                fixtures a DAG reads at runtime — see below
 scripts/
@@ -46,6 +47,26 @@ tests/                  parse and integrity tests (run locally)
   skills/               dag-author, dag-deploy, dag-debug
   commands/             slash commands
   references/           g1pro.md and other deep docs
+```
+
+## Audience: `dags/` is shared, the rest is not
+
+`dags/` — DAG files, their `doc_md`, `dags/files/`, and `dags/README.md` — is shared
+with other teams who run **their own Airflow**, not this cluster. Keep it
+**environment-neutral**: no hostnames, LAN IPs, usernames, host filesystem paths,
+or references to `g1pro.md`. Say "the FTPS server", not the machine's name; say
+"an address the worker pods can resolve", not the specific IP.
+
+Connection and Variable *names* are fine — they are identifiers a reader replaces.
+Name them neutrally (`ftps_test_001`, `sftp_test_001`), not after a machine.
+
+Everything outside `dags/` — `CLAUDE.md`, `.claude/`, `scripts/` — is internal and
+may name this environment freely.
+
+Before committing changes under `dags/`:
+
+```bash
+grep -rnE "nixhome|192\.168|nickmsft|external-storage|Tailscale|g1pro" dags/
 ```
 
 ## DAG Conventions
@@ -73,6 +94,8 @@ preferred over coupling them.
   from `dags/files/` (the DAG folder is a hostPath mount, visible in every pod at
   `/opt/airflow/dags/files/`), or do the work in a single task using an in-memory
   buffer.
+- **Add new examples to `dags/README.md`** — where they fit in the run order, what
+  they demonstrate, and what they depend on.
 - **`doc_md` is required — on the DAG and on every task.** It renders as Markdown in
   the UI (Graph → task → Documentation) and is the only in-product explanation an
   operator gets. A module docstring does *not* count: Airflow only surfaces it if

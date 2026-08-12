@@ -17,7 +17,7 @@ Streams a file **FTPS → SFTP** without staging it on disk.
 
 ```
 FTPS server  ──get──▶  dag (stream)  ──put──▶  SFTP server
-/upload/<file>                                 /home/airflowsftp/incoming/<file>
+ FTPS_DIR/<file>                                SFTP_DIR/<file>
 ```
 
 #### Trigger
@@ -61,11 +61,12 @@ must not lose the only copy. For a real pickup pattern, delete only after
 | Kind | Name | Purpose |
 |---|---|---|
 | Connection | `ftps_test_001` | FTPS source (conn type `FTP`) |
-| Connection | `sftp_g1pro` | SFTP destination (conn type `SFTP`) |
-| Variable | `ftps_ca_cert` | PEM of `/etc/ssl/private/vsftpd.pem` |
+| Connection | `sftp_test_001` | SFTP destination (conn type `SFTP`) |
+| Variable | `ftps_ca_cert` | PEM of the FTPS server's CA certificate |
 
-Both connections use the **LAN IP**, not the Tailscale name — worker pods are not
-on the tailnet.
+Set both connections to an address the **worker pods** can resolve. A hostname
+that works from a laptop (VPN, mesh network, `/etc/hosts`) often does not resolve
+inside the cluster.
 
 #### Why a custom FTPS hook
 
@@ -77,9 +78,10 @@ encrypted. The SFTP side needs no such workaround.
 """
 
 FTPS_CONN_ID = "ftps_test_001"
-SFTP_CONN_ID = "sftp_g1pro"
+SFTP_CONN_ID = "sftp_test_001"
 
-# vsftpd chroots ftpuser; only /upload is readable/writable. See g1pro.md §3.
+# Adjust both to your servers. FTPS_DIR is inside the FTPS user's chroot;
+# SFTP_DIR must be writable by the SFTP connection's user.
 FTPS_DIR = "/upload"
 SFTP_DIR = "/home/airflowsftp/incoming"
 
@@ -88,7 +90,7 @@ BUFFER_LIMIT = 2 * 1024**3  # 2 GiB — fail rather than transfer unbounded
 
 
 class MyFTPSHook(FTPSHook):
-    """FTPSHook that trusts the g1pro self-signed CA and encrypts data transfers."""
+    """FTPSHook that trusts a private CA and encrypts data transfers."""
 
     def get_conn(self) -> ftplib.FTP:
         from airflow.sdk import Variable
