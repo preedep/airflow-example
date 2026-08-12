@@ -540,6 +540,40 @@ it cannot be `pip install`ed into a running worker.
 
 Secrets belong in Airflow Variables, **never in DAG code or the repo**.
 
+### Connections currently defined
+
+| conn_id | Type | Purpose |
+|---|---|---|
+| `ftps_test_001` | `ftp` | FTPS server (TLS chosen in code via `FTPSHook`) |
+| `sftp_test_001` | `sftp` | SFTP drop, user `airflowsftp` |
+| `wasb-nickstorageairflow002` | `wasb` | Azure Blob, account `nickstoragedev002airflow`, container `data001` |
+
+Variables: `ftps_ca_cert` (PEM for the FTPS private CA), `ftps_password` (unused —
+the password now lives in the connection; safe to delete).
+
+All credential values are in `g1pro.secrets.md` (gitignored).
+
+### Azure Blob (wasb) with a SAS token
+
+The SAS goes in the connection's **extra**, not the password field, and `login` is the
+**storage account name** — `WasbHook` builds the account URL from it:
+
+```bash
+kubectl -n airflow exec deploy/airflow-webserver -- \
+  airflow connections add 'wasb-<name>' \
+    --conn-type wasb \
+    --conn-login '<storage-account-name>' \
+    --conn-extra '{"sas_token": "?sp=...&sig=..."}'
+```
+
+Keep the leading `?`. The container name is **not** part of the connection — pass it
+per-operation (`container_name="data001"`). `WasbHook.get_conn()` checks
+`connection_string` → service principal → `shared_access_key` → `sas_token`, so do
+not set more than one.
+
+A container-scoped SAS (`sr=c`) cannot list containers, only blobs within its own
+container — `get_blobs_list(container_name=...)` works, account-level calls do not.
+
 ```bash
 export KUBECONFIG="$HOME/.kube/config:$HOME/.kube/nixhome-config"
 

@@ -21,10 +21,14 @@ The DAGs build on each other. Run top to bottom the first time.
 | 1 | `dag_ftps_simple_transfer.py` | provider operator, file upload | — |
 | 2 | `dag_ftps_sensor.py` | sensor in reschedule mode | a file uploaded by #1 |
 | 3 | `dag_ftps_to_sftp_stream_transfer.py` | streaming between two servers | a file uploaded by #1 |
+| 4 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
 timeout and the stream transfer fails with "not found".
+
+**#4 is independent** of the FTPS/SFTP chain — it needs only an Azure Blob
+connection and a blob to find.
 
 ---
 
@@ -39,6 +43,12 @@ them in one place at the top of each file if yours differ.
 |---|---|---|
 | `ftps_test_001` | **`FTP`** | host, login, password, port `21` |
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
+| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4 only) |
+
+For SAS auth, put the token in the connection's **extra** as
+`{"sas_token": "?sp=...&sig=..."}` and set **login to the storage account name** —
+`WasbHook` builds the account URL from it. The container is not part of the
+connection; it is passed per operation.
 
 > **There is no `FTPS` connection type.** The `ftp` provider registers
 > `conn_type="ftp"` for both `FTPHook` and `FTPSHook`. TLS is selected in code by
@@ -173,6 +183,44 @@ direct server-to-server hop.
 **The source is not deleted** after a successful transfer, so re-running re-sends
 the same file. That is deliberate — a failed put must not lose the only copy. For a
 real pickup pattern, delete only after the verify step confirms the size matches.
+
+---
+
+## 4. `dag_wasb_prefix_suffix_sensor.py`
+
+`nix-dag-wasb-prefix-suffix-sensor` — waits for an Azure blob matching **both** a
+prefix and a suffix.
+
+```bash
+airflow dags trigger nix-dag-wasb-prefix-suffix-sensor \
+  --conf '{"prefix":"incoming/","suffix":".csv"}'
+```
+
+**Pattern: extend a provider sensor rather than writing one from scratch.** The
+provider ships `WasbBlobSensor` (exact name) and `WasbPrefixSensor` (prefix only);
+neither expresses *"any `.csv` under `incoming/`"*. Subclassing `WasbPrefixSensor`
+and overriding `poke()` inherits its connection handling and templated fields:
+
+```python
+class WasbPrefixSensorWithSuffix(WasbPrefixSensor):
+    template_fields = ("container_name", "prefix", "suffix")
+
+    def poke(self, context) -> bool:
+        blobs = hook.get_blobs_list(container_name=..., prefix=self.prefix, delimiter="")
+        matched = [b for b in blobs if b.lower().endswith(self.suffix.lower())]
+        ...
+```
+
+**Push the filter as far server-side as it goes.** The prefix is passed to Azure so
+it filters before returning; only the suffix is matched locally. Filtering entirely
+client-side would list the whole container on every poke.
+
+Note `get_blobs_list` defaults to `delimiter="/"`, which stops at the first level —
+pass `delimiter=""` to recurse.
+
+The sensor pushes matching names to XCom (`matched_blobs`) so the downstream task
+acts on exactly what satisfied it, rather than re-listing and possibly seeing a
+different set.
 
 ---
 

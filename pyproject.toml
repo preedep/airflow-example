@@ -17,6 +17,7 @@ dependencies = [
     "pendulum==3.2.0",
     "apache-airflow-providers-ftp==3.14.3",
     "apache-airflow-providers-sftp==5.7.3",
+    "apache-airflow-providers-microsoft-azure==13.1.1",
 ]
 
 [dependency-groups]
