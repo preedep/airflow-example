@@ -82,6 +82,14 @@ for f in $FILES; do
         "$f" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 done
 
+# Runtime fixtures a DAG reads from /opt/airflow/dags/files/. Synced whole
+# because a DAG cannot know which file it needs until it runs.
+if [ -d "$DAGS_DIR/files" ]; then
+    info "Syncing dags/files/"
+    rsync -av --exclude='__pycache__' --exclude='*.pyc' \
+        "$DAGS_DIR/files/" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/files/"
+fi
+
 info "Deployed. Verify with the Airflow MCP server:"
 printf '    mcp__airflow__get_import_errors()\n'
 printf '    mcp__airflow__get_dag(dag_id="<exact-dag-id>")\n'

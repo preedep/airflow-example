@@ -38,6 +38,7 @@ never needs sudo.
 ```
 dags/
   dag_<name>.py         one standalone file per demo DAG
+  files/                fixtures a DAG reads at runtime — see below
 scripts/
   deploy-dag.sh         parse-check + test + rsync to g1pro
 tests/                  parse and integrity tests (run locally)
@@ -62,6 +63,16 @@ preferred over coupling them.
   `PythonOperator`.
 - Every DAG sets `dag_id`, `description`, `schedule`, `start_date`, `catchup=False`,
   `tags`, and `default_args`.
+- **Prefer a provider operator over `PythonOperator`.** Check what the provider ships
+  before writing Python — e.g. the `ftp` provider has `FTPSFileTransmitOperator` for
+  put/get. Needing a custom hook is not a reason to abandon the operator: subclass it
+  and override the `hook` property.
+- **Tasks do not share a filesystem.** Every task runs in its own ephemeral pod, so a
+  file written to `/tmp` by one task does not exist for the next — it fails at
+  runtime with `FileNotFoundError`, which a parse check cannot catch. Read fixtures
+  from `dags/files/` (the DAG folder is a hostPath mount, visible in every pod at
+  `/opt/airflow/dags/files/`), or do the work in a single task using an in-memory
+  buffer.
 - **`doc_md` is required — on the DAG and on every task.** It renders as Markdown in
   the UI (Graph → task → Documentation) and is the only in-product explanation an
   operator gets. A module docstring does *not* count: Airflow only surfaces it if

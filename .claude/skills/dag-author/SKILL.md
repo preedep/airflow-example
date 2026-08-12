@@ -97,7 +97,49 @@ Conventions: import heavy modules inside the callable; log via
 `logging.getLogger("airflow.task")` with a `[<name>]` prefix; always set a `timeout`
 on network calls; raise rather than return an error.
 
-## 3. Sensors
+## 3. Pick the operator before writing Python
+
+**Check the provider for an operator that already does the job.** Reach for
+`PythonOperator` only when nothing fits. A provider operator brings templated
+fields, retries, logging, and XCom handling you would otherwise re-implement.
+
+```bash
+# What does this provider ship?
+.venv/bin/python -c "
+import pkgutil, airflow.providers.ftp as p
+[print(m.name) for m in pkgutil.walk_packages(p.__path__, p.__name__ + '.')]"
+```
+
+Easy to miss: `apache-airflow-providers-ftp` has **`FTPSFileTransmitOperator`** for
+put/get — writing a `PythonOperator` that calls `hook.store_file()` duplicates it.
+
+Needing a custom hook is **not** a reason to abandon the operator. Subclass and
+override the `hook` property; the operator's logic stays intact:
+
+```python
+class MyFTPSFileTransmitOperator(FTPSFileTransmitOperator):
+    @cached_property
+    def hook(self) -> FTPSHook:
+        return MyFTPSHook(ftp_conn_id=self.ftp_conn_id)
+```
+
+## 3a. Tasks do not share a filesystem
+
+Every task runs in its **own ephemeral pod** under KubernetesExecutor. A file
+written to local disk by one task does not exist for the next — it fails with
+`FileNotFoundError`, and only at runtime, so a parse check will not catch it.
+
+Options, in order of preference:
+
+1. **Read from shared storage.** `/mnt/external-storage/airflow-dags` on the host is
+   `/opt/airflow/dags` in every pod. Put fixtures in `dags/files/`.
+2. **Do it in one task.** Build the payload in memory and pass a `BytesIO` buffer
+   to the hook rather than writing a temp file.
+3. **Pass a reference, not a file.** Write to object storage, push the key to XCom.
+
+Never assume `/tmp` persists between tasks.
+
+## 4. Sensors
 
 Always `mode="reschedule"` with an explicit `poke_interval` and `timeout`.
 `mode="poke"` holds a worker pod for the entire wait — on KubernetesExecutor that is a
@@ -119,7 +161,7 @@ wait = FTPSSensor(
 A sensor without a `timeout` waits forever and blocks `max_active_runs`.
 `dags/dag_ftps_sensor.py` is a working example.
 
-## 4. Rules that break naive code
+## 5. Rules that break naive code
 
 **No deprecated APIs — enforced, not advisory.** The 2.x paths still *work* in 3.2.1
 as warning shims, so they parse fine and even run. The integrity tests fail the build
@@ -165,14 +207,14 @@ never hardcoded. Set them per `.claude/references/g1pro.md` §9.
 **Idempotency.** A retry must converge, not accumulate. Delete-then-insert by
 partition rather than blind append.
 
-## 5. Heavy or non-Python work
+## 6. Heavy or non-Python work
 
 This is a KubernetesExecutor cluster — use `KubernetesPodOperator`
 (`airflow.providers.cncf.kubernetes.operators.pod`) rather than fattening the worker.
 Pin the image to an **x86_64** tag, never `:latest`, and set memory limits — an
 unbounded pod OOM-kills as `Negsignal.SIGKILL`.
 
-## 6. Validate before deploying
+## 7. Validate before deploying
 
 `.venv` is pinned to Python 3.13 + Airflow 3.2.1 to match the server image.
 
@@ -183,7 +225,7 @@ unbounded pod OOM-kills as `Negsignal.SIGKILL`.
 ```
 
 `tests/test_dag_integrity.py` picks up new DAGs automatically — it globs
-`dags/dag_*.py`, so there is no per-DAG test to add. It enforces the rules in §4
+`dags/dag_*.py`, so there is no per-DAG test to add. It enforces the rules in §5
 plus the standalone-file requirement.
 
 A clean local parse is necessary but not sufficient: the venv carries only the

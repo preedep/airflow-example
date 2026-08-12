@@ -1,0 +1,3 @@
+hello from g1pro
+This file lives on the server at /mnt/external-storage/airflow-dags/files/probe.txt
+and is mounted into every Airflow pod at /opt/airflow/dags/files/probe.txt.
