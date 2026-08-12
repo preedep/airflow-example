@@ -42,14 +42,34 @@ If this fails, Tailscale is probably down. Start it and retry.
 | Host | `nixhome-linux-g1pro` (Tailscale) or `192.168.101.19` (LAN) |
 | Port | `22` |
 | User | `nickmsft` |
-| Password | **none — SSH public-key auth only** |
+| Password | key auth in practice; see the correction below |
 | Shell | `/usr/bin/zsh` |
 | Home | `/home/nickmsft` |
 | Server module | `openssh-sftp-server` (OpenSSH built-in subsystem) |
 
-> **There is no SFTP password.** Authentication is via the SSH key already present on the Mac mini
-> (`~/.ssh/`). Do not attempt password authentication — it is not enabled. If a key is missing,
-> copy one with `ssh-copy-id nickmsft@nixhome-linux-g1pro`.
+> **Correction (2026-08-12):** this section previously said password auth was disabled. It is not.
+> `/etc/ssh/sshd_config.d/50-cloud-init.conf` sets **`PasswordAuthentication yes`**, so password
+> auth is enabled globally — `nickmsft` simply has no password set and uses its key.
+>
+> Day to day, use the SSH key already on the Mac mini (`~/.ssh/`); if one is missing, copy it with
+> `ssh-copy-id nickmsft@nixhome-linux-g1pro`. But do not assume the server rejects passwords —
+> any account with a password set can log in with it.
+
+### SFTP account for Airflow
+
+`airflowsftp` exists for DAG transfers, separate from `nickmsft`:
+
+| Field | Value |
+|---|---|
+| User | `airflowsftp` (uid 1002) |
+| Password | see `g1pro.secrets.md` (gitignored) |
+| Home | `/home/airflowsftp` |
+| Drop directory | `/home/airflowsftp/incoming` |
+| Shell | `/usr/sbin/nologin` |
+| sshd restriction | `Match User airflowsftp` → `ForceCommand internal-sftp` |
+
+`ForceCommand internal-sftp` limits the account to file transfer — a leaked password yields no
+shell and no port forwarding. Airflow reaches it through connection `sftp_g1pro`.
 
 ### Usage
 
@@ -742,7 +762,8 @@ scp ./file.txt nickmsft@nixhome-linux-g1pro:/mnt/external-storage/
 | Airflow UI | `http://nixhome-linux-g1pro:30080` — `admin` / see `g1pro.secrets.md` |
 | Airflow MCP | `http://nixhome-linux-g1pro:30700/mcp` — **live, no auth, 68 tools** (§9b) |
 | DAG deploy target | `nickmsft@nixhome-linux-g1pro:/mnt/external-storage/airflow-dags/` |
-| SFTP | `nickmsft@nixhome-linux-g1pro` — **SSH key, no password** |
+| SFTP (admin) | `nickmsft@nixhome-linux-g1pro` — SSH key |
+| SFTP (Airflow) | `airflowsftp@nixhome-linux-g1pro` → `/home/airflowsftp/incoming`, password in `g1pro.secrets.md` |
 | FTPS | `ftpuser@nixhome-linux-g1pro:21` — **live**, explicit TLS, upload to `/upload/` (§3) |
 
 ---

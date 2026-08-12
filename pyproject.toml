@@ -16,6 +16,7 @@ dependencies = [
     "requests==2.33.1",
     "pendulum==3.2.0",
     "apache-airflow-providers-ftp==3.14.3",
+    "apache-airflow-providers-sftp==5.7.3",
 ]
 
 [dependency-groups]
