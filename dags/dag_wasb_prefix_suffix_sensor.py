@@ -75,11 +75,22 @@ For SAS auth the token goes in the connection's **extra** as `sas_token`, and
 The container is not part of the connection; it is passed per operation.
 """
 
+# --------------------------------------------------------------------------- #
+# Configuration
+# --------------------------------------------------------------------------- #
+
 WASB_CONN_ID = "wasb-nickstorageairflow002"
 CONTAINER = "data001"
 
+# Referenced by the DAG docs; the live defaults are the Jinja fallbacks on the
+# sensor's prefix/suffix fields, since a callable never sees these constants.
 DEFAULT_PREFIX = ""
 DEFAULT_SUFFIX = ".txt"
+
+
+# --------------------------------------------------------------------------- #
+# Sensor override
+# --------------------------------------------------------------------------- #
 
 
 class WasbPrefixSensorWithSuffix(WasbPrefixSensor):
@@ -89,8 +100,13 @@ class WasbPrefixSensorWithSuffix(WasbPrefixSensor):
     still applied server-side, and only the suffix check is done locally.
     """
 
+    # Redeclared to add "suffix" — template_fields is not merged with the base
+    # class's, so omitting the inherited names would silently stop rendering
+    # Jinja in container_name and prefix.
     template_fields = ("container_name", "prefix", "suffix")
 
+    # Keyword-only, so the added arguments can never be confused with the base
+    # sensor's positional parameters.
     def __init__(
         self,
         *,
@@ -103,6 +119,8 @@ class WasbPrefixSensorWithSuffix(WasbPrefixSensor):
         self.case_sensitive = case_sensitive
 
     def _matches(self, blob_name: str) -> bool:
+        # Empty suffix means "no suffix filter", degrading to the stock
+        # prefix-only behaviour rather than matching nothing.
         if not self.suffix:
             return True
         if self.case_sensitive:
@@ -110,10 +128,16 @@ class WasbPrefixSensorWithSuffix(WasbPrefixSensor):
         return blob_name.lower().endswith(self.suffix.lower())
 
     def poke(self, context) -> bool:
+        # Built per poke, not cached on the instance: in reschedule mode each
+        # poke is a new pod, so a cached client would not survive anyway.
         hook = WasbHook(wasb_conn_id=self.wasb_conn_id, public_read=self.public_read)
 
         # delimiter="" recurses; the provider's default "/" stops at the first level.
+        # Spread last so an explicit check_options entry wins over this default.
         options = {"delimiter": "", **self.check_options}
+
+        # prefix goes to Azure so the filtering happens server-side; only the
+        # already-narrowed result set is scanned locally for the suffix.
         blobs = hook.get_blobs_list(
             container_name=self.container_name, prefix=self.prefix, **options
         )
@@ -132,14 +156,23 @@ class WasbPrefixSensorWithSuffix(WasbPrefixSensor):
             return False
 
         # Hand the exact matches downstream so it does not have to re-list.
+        # sorted() keeps the XCom stable across runs that match the same set.
         context["ti"].xcom_push(key="matched_blobs", value=sorted(matched))
         return True
+
+
+# --------------------------------------------------------------------------- #
+# Task callables
+# --------------------------------------------------------------------------- #
 
 
 def report_matches(ti=None, **context):
     """Log the blobs the sensor matched, with their sizes."""
     task_log = logging.getLogger("airflow.task")
 
+    # Defensive: the sensor only returns True after pushing a non-empty list, so
+    # an empty pull means the contract broke (task renamed, XCom cleared) rather
+    # than "nothing matched". Fail instead of reporting a misleading zero.
     names = ti.xcom_pull(task_ids="wait_for_blob", key="matched_blobs") or []
     if not names:
         raise ValueError("sensor succeeded but pushed no blob names")
@@ -147,6 +180,8 @@ def report_matches(ti=None, **context):
     hook = WasbHook(wasb_conn_id=WASB_CONN_ID)
     client = hook.get_conn().get_container_client(CONTAINER)
 
+    # One properties call per blob — fine for a demo-sized match set, but this
+    # is the part to batch if the sensor can match thousands of blobs.
     results = []
     for name in names:
         props = client.get_blob_client(name).get_blob_properties()
@@ -155,6 +190,10 @@ def report_matches(ti=None, **context):
 
     return {"container": CONTAINER, "count": len(results), "blobs": results}
 
+
+# --------------------------------------------------------------------------- #
+# DAG definition
+# --------------------------------------------------------------------------- #
 
 with DAG(
     dag_id="nix-dag-wasb-prefix-suffix-sensor",
@@ -197,4 +236,5 @@ exactly what satisfied the sensor even if the container changed in between.
 """,
     )
 
+    # report consumes the sensor's matched_blobs XCom — a data dependency.
     wait_for_blob >> report

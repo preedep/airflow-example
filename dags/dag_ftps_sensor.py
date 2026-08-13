@@ -58,19 +58,36 @@ There is no `FTPS` connection type — the `ftp` provider registers `conn_type="
 for both hooks. TLS is selected by importing `FTPSHook`, not by the connection.
 """
 
+# --------------------------------------------------------------------------- #
+# Configuration
+# --------------------------------------------------------------------------- #
+
 FTPS_CONN_ID = "ftps_test_001"
 
 # The FTPS user is chrooted and the chroot root is read-only; only /upload
 # accepts writes.
+#
+# Jinja, not an f-string: the sensor's `path` is a templated field, so this is
+# rendered per run against that run's conf rather than frozen at parse time.
 REMOTE_PATH = "/upload/{{ dag_run.conf.get('filename', 'probe.txt') }}"
+
+
+# --------------------------------------------------------------------------- #
+# Hook and sensor overrides
+# --------------------------------------------------------------------------- #
 
 
 class MyFTPSHook(FTPSHook):
     """FTPSHook that trusts a private CA and encrypts data transfers."""
 
     def get_conn(self) -> ftplib.FTP:
+        # Imported inside the method, not at module scope: the DAG file is
+        # re-parsed every dag-processor cycle, and Variable.get() at import time
+        # would be a DB round-trip on every one of them.
         from airflow.sdk import Variable
 
+        # The base hook treats self.conn as its connection cache; honouring it
+        # keeps one FTPS session per hook instance rather than one per call.
         if self.conn is not None:
             return self.conn
 
@@ -79,8 +96,14 @@ class MyFTPSHook(FTPSHook):
         # the TLS context differs, and it is the reason for this override.
         params = self.get_connection(self.ftp_conn_id)
 
+        # cadata adds the private CA *in addition to* the system trust store;
+        # it does not disable verification. check_hostname stays on, so the
+        # certificate's CN/SAN must still match the connection's host.
         context = ssl.create_default_context(cadata=Variable.get("ftps_ca_cert"))
 
+        # ftplib.FTP_TLS takes no port argument, so the port can only be set on
+        # the class. This mutates global state — acceptable because each task
+        # runs in its own pod, but it would leak across DAGs in one process.
         if params.port:
             ftplib.FTP_TLS.port = params.port
 
@@ -93,17 +116,35 @@ class MyFTPSHook(FTPSHook):
 
 
 class MyFTPSSensor(FTPSSensor):
+    """Provider sensor, re-pointed at the CA-trusting hook.
+
+    `_create_hook` is the provider's own extension point — overriding it keeps
+    all of the sensor's poke logic, `550`-means-keep-waiting handling and
+    templated fields intact.
+    """
+
     def _create_hook(self) -> FTPSHook:
         return MyFTPSHook(ftp_conn_id=self.ftp_conn_id)
+
+
+# --------------------------------------------------------------------------- #
+# Task callables
+# --------------------------------------------------------------------------- #
 
 
 def report_arrival(**context):
     """Log size and mtime of the file the sensor found."""
     task_log = logging.getLogger("airflow.task")
 
+    # Rebuilt here rather than read from REMOTE_PATH: that constant is Jinja,
+    # and only templated operator fields get rendered — a plain callable sees
+    # the raw braces. Keep the default in sync with the one above.
     conf = context["dag_run"].conf or {}
     path = f"/upload/{conf.get('filename', 'probe.txt')}"
 
+    # This task runs in a different pod than the sensor, so it opens its own
+    # connection; nothing is inherited from the poke. The context manager
+    # guarantees the session is closed even if get_size raises.
     with MyFTPSHook(ftp_conn_id=FTPS_CONN_ID) as hook:
         size = hook.get_size(path)
         mod_time = hook.get_mod_time(path)
@@ -111,6 +152,10 @@ def report_arrival(**context):
     task_log.info("[ftps_sensor] %s — %s bytes, modified %s", path, size, mod_time)
     return {"path": path, "size": size, "mod_time": str(mod_time)}
 
+
+# --------------------------------------------------------------------------- #
+# DAG definition
+# --------------------------------------------------------------------------- #
 
 with DAG(
     dag_id="nix-dag-ftps-sensor",
@@ -150,4 +195,5 @@ Returns a dict (`path`, `size`, `mod_time`) which is pushed to XCom.
 """,
     )
 
+    # Strictly sequential: the report is only meaningful once the file exists.
     wait_for_file >> report

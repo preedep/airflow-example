@@ -75,6 +75,10 @@ The operator itself is the provider's own `FTPSFileTransmitOperator`; only its
 | File | `files/<filename>` under the DAG folder | the payload to upload |
 """
 
+# --------------------------------------------------------------------------- #
+# Configuration
+# --------------------------------------------------------------------------- #
+
 FTPS_CONN_ID = "ftps_test_001"
 
 # The FTPS user is chrooted and the chroot root is read-only; only /upload
@@ -85,17 +89,30 @@ REMOTE_DIR = "/upload"
 # is readable by any worker at runtime.
 LOCAL_DIR = "/opt/airflow/dags/files"
 
+# Jinja rather than a Python value: both paths are templated operator fields,
+# so the filename is resolved per run from that run's conf. The f-string only
+# splices the literal directory around the still-unrendered expression.
 _FILENAME = "{{ dag_run.conf.get('filename', 'probe.txt') }}"
 LOCAL_PATH = f"{LOCAL_DIR}/{_FILENAME}"
 REMOTE_PATH = f"{REMOTE_DIR}/{_FILENAME}"
+
+
+# --------------------------------------------------------------------------- #
+# Hook and operator overrides
+# --------------------------------------------------------------------------- #
 
 
 class MyFTPSHook(FTPSHook):
     """FTPSHook that trusts a private CA and encrypts data transfers."""
 
     def get_conn(self) -> ftplib.FTP:
+        # Imported inside the method, not at module scope: the DAG file is
+        # re-parsed every dag-processor cycle, and Variable.get() at import time
+        # would be a DB round-trip on every one of them.
         from airflow.sdk import Variable
 
+        # The base hook treats self.conn as its connection cache; honouring it
+        # keeps one FTPS session per hook instance rather than one per call.
         if self.conn is not None:
             return self.conn
 
@@ -104,8 +121,14 @@ class MyFTPSHook(FTPSHook):
         # the TLS context differs, and it is the reason for this override.
         params = self.get_connection(self.ftp_conn_id)
 
+        # cadata adds the private CA *in addition to* the system trust store;
+        # it does not disable verification. check_hostname stays on, so the
+        # certificate's CN/SAN must still match the connection's host.
         context = ssl.create_default_context(cadata=Variable.get("ftps_ca_cert"))
 
+        # ftplib.FTP_TLS takes no port argument, so the port can only be set on
+        # the class. This mutates global state — acceptable because each task
+        # runs in its own pod, but it would leak across DAGs in one process.
         if params.port:
             ftplib.FTP_TLS.port = params.port
 
@@ -120,22 +143,38 @@ class MyFTPSHook(FTPSHook):
 class MyFTPSFileTransmitOperator(FTPSFileTransmitOperator):
     """Official FTPS transfer operator, pointed at the CA-trusting hook."""
 
+    # cached_property, matching the base class: `hook` is declared that way
+    # upstream, so a plain @property would still override correctly but would
+    # rebuild the hook on every access. Same decorator keeps one session per
+    # task instance.
     @cached_property
     def hook(self) -> FTPSHook:
         return MyFTPSHook(ftp_conn_id=self.ftp_conn_id)
+
+
+# --------------------------------------------------------------------------- #
+# Task callables
+# --------------------------------------------------------------------------- #
 
 
 def verify_upload(**context):
     """Read back size and mtime from the server to prove the transfer landed."""
     task_log = logging.getLogger("airflow.task")
 
+    # Rebuilt from conf rather than reusing REMOTE_PATH: that constant is Jinja
+    # and only operator fields get rendered — a callable sees the raw braces.
+    # Keep the "probe.txt" default in sync with the one above.
     filename = (context["dag_run"].conf or {}).get("filename", "probe.txt")
     remote_path = f"{REMOTE_DIR}/{filename}"
 
+    # A fresh connection: this task is a separate pod from the upload, so it
+    # genuinely re-reads server state rather than trusting the operator's word.
     with MyFTPSHook(ftp_conn_id=FTPS_CONN_ID) as hook:
         size = hook.get_size(remote_path)
         mod_time = hook.get_mod_time(remote_path)
 
+    # Catches both a zero-byte file and a None size (server reported nothing) —
+    # either means the put did not land, so fail loudly instead of returning.
     if not size:
         raise ValueError(f"{remote_path} is empty on the server — upload did not land")
 
@@ -144,6 +183,10 @@ def verify_upload(**context):
     )
     return {"path": remote_path, "size": size, "mod_time": str(mod_time)}
 
+
+# --------------------------------------------------------------------------- #
+# DAG definition
+# --------------------------------------------------------------------------- #
 
 with DAG(
     dag_id="nix-dag-ftps-simple-transfer",
@@ -183,4 +226,5 @@ silent partial upload fails the run rather than passing unnoticed.
 """,
     )
 
+    # Verification must not run unless the upload reported success.
     upload >> verify

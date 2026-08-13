@@ -88,12 +88,29 @@ This DAG runs **288 times a day** while unpaused and holds a worker pod for 4
 minutes each time. Pause it when you are done demonstrating it.
 """
 
+# --------------------------------------------------------------------------- #
+# Configuration
+# --------------------------------------------------------------------------- #
+
+# Deliberately longer than half the 5-minute schedule: it makes overlap possible,
+# which is precisely what max_active_runs=1 has to prevent for this to be cyclic.
 SLEEP_SECONDS = 4 * 60
+
+# Sleep granularity. Short enough that the task logs visible progress, long
+# enough that a 4-minute run emits ~8 lines rather than flooding the log.
 CHUNK_SECONDS = 30
 
 # Task-level cap. Lower than dagrun_timeout so a single slow task is caught here,
 # with a clearer message than a whole-run timeout gives.
 TASK_TIMEOUT = timedelta(minutes=6)
+
+
+# --------------------------------------------------------------------------- #
+# Callbacks
+#
+# The two below are layered on purpose: a task timeout and a dagrun timeout are
+# distinct events, and neither callback reliably fires for the other's case.
+# --------------------------------------------------------------------------- #
 
 
 def on_task_timeout_or_failure(context):
@@ -105,6 +122,10 @@ def on_task_timeout_or_failure(context):
     task_log = logging.getLogger("airflow.task")
 
     ti = context["task_instance"]
+
+    # .get(), not ["exception"]: the key is absent for some failure paths
+    # (zombie tasks, external kills), where a KeyError inside the callback
+    # would mask the failure it is meant to report.
     exc = context.get("exception")
     timed_out = isinstance(exc, AirflowTaskTimeout)
 
@@ -136,6 +157,9 @@ def on_dagrun_failure(context):
     log = logging.getLogger("airflow.task")
 
     dag_run = context["dag_run"]
+
+    # Both dates can be None depending on how the run ended, so duration is
+    # optional throughout rather than assumed present.
     started = dag_run.start_date
     ran_for = (dag_run.end_date - started).total_seconds() if started and dag_run.end_date else None
 
@@ -148,7 +172,13 @@ def on_dagrun_failure(context):
     )
 
     # A run that lasted about as long as the timeout was almost certainly killed by
-    # it, rather than failing on its own.
+    # it, rather than failing on its own. This is inference, not a flag: the
+    # context carries no "timed out" marker at DAG-run level.
+    #
+    # The 30s tolerance absorbs scheduler latency between the timeout expiring
+    # and end_date being written. A task that fails on its own within 30s of the
+    # limit is misreported as a timeout — acceptable, since both mean the cycle
+    # is running too close to its window.
     timeout_s = context["dag"].dagrun_timeout.total_seconds()
     if ran_for is not None and ran_for >= timeout_s - 30:
         log.error(
@@ -159,17 +189,27 @@ def on_dagrun_failure(context):
         )
 
 
+# --------------------------------------------------------------------------- #
+# Task callables
+# --------------------------------------------------------------------------- #
+
+
 def simulate_work(**context):
     """Stand-in for real work: sleep, logging progress so the task is not opaque."""
     task_log = logging.getLogger("airflow.task")
 
     run_id = context["dag_run"].run_id
+
+    # monotonic, not wall-clock: immune to NTP steps and DST, so the loop
+    # measures real elapsed time even if the pod's clock is adjusted.
     started = time.monotonic()
 
     task_log.info("[cyclic] start run_id=%s, simulating %ss of work", run_id, SLEEP_SECONDS)
 
     elapsed = 0
     while elapsed < SLEEP_SECONDS:
+        # min() so the final chunk does not overshoot the target; re-derived
+        # from `started` each pass so slow log writes cannot accumulate drift.
         time.sleep(min(CHUNK_SECONDS, SLEEP_SECONDS - elapsed))
         elapsed = int(time.monotonic() - started)
         task_log.info("[cyclic] working... %ss / %ss", elapsed, SLEEP_SECONDS)
@@ -185,8 +225,13 @@ def report_cycle(ti=None, **context):
     result = ti.xcom_pull(task_ids="simulate_work")
     dag_run = context["dag_run"]
 
-    # logical_date is None for manually triggered runs in Airflow 3.
+    # logical_date is None for manually triggered runs in Airflow 3; run_after
+    # is the fallback so a manual trigger reports a lag instead of crashing.
     scheduled_for = dag_run.logical_date or dag_run.run_after
+
+    # Positive lag = the run started after its slot. Values well past the
+    # 5-minute interval are the signal that this run queued behind the previous
+    # one, which is the behaviour this DAG exists to demonstrate.
     lag = (dag_run.start_date - scheduled_for).total_seconds() if dag_run.start_date else None
 
     task_log.info(
@@ -197,9 +242,12 @@ def report_cycle(ti=None, **context):
         result["duration_seconds"],
     )
 
-    # A lag well over the 5 min interval means the previous run was still going and
-    # this one queued behind it — the cyclic guarantee doing its job.
     return {"scheduled_for": str(scheduled_for), "start_lag_seconds": lag}
+
+
+# --------------------------------------------------------------------------- #
+# DAG definition
+# --------------------------------------------------------------------------- #
 
 
 with DAG(
@@ -248,4 +296,5 @@ one — visible evidence that `max_active_runs=1` serialised the cycle.
 """,
     )
 
+    # report reads simulate_work's XCom, so this is a data dependency, not just order.
     work >> report
