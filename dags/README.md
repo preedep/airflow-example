@@ -1,10 +1,18 @@
 # Demo DAGs
 
 Apache Airflow **3.x** examples covering file-transfer patterns: uploading to an
-FTPS server, waiting on a file with a sensor, and streaming between two servers.
+FTPS server, waiting on a file with a sensor, streaming between two servers, and
+streaming into Azure Blob Storage.
+
+They also work through a progression in **how much of a provider you reuse** —
+using an operator as shipped (#1), extending a sensor (#6), overriding one method
+of a transfer operator (#4), and writing an operator from scratch when the
+provider has nothing (#5).
 
 Each DAG is a **standalone single file** — no shared helper module, no subfolders,
-no cross-DAG imports. Copy one out of this repo and it still works.
+no cross-DAG imports. Copy one out of this repo and it still works. That is why
+`MyFTPSHook` appears in more than one file: duplicating a small helper is
+preferred here over coupling two demos together.
 
 Written for a **KubernetesExecutor** deployment, where every task runs in its own
 ephemeral pod. Most of the design decisions here follow from that; see
@@ -21,17 +29,27 @@ The DAGs build on each other. Run top to bottom the first time.
 | 1 | `dag_ftps_simple_transfer.py` | provider operator, file upload | — |
 | 2 | `dag_ftps_sensor.py` | sensor in reschedule mode | a file uploaded by #1 |
 | 3 | `dag_ftps_to_sftp_stream_transfer.py` | streaming between two servers | a file uploaded by #1 |
-| 4 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container |
-| 5 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
+| 4 | `dag_sftp_to_blob_stream.py` | streaming into object storage | a file in the SFTP source directory |
+| 5 | `dag_ftps_to_blob_stream.py` | bridging a push API to a pull API | a file uploaded by #1 |
+| 6 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container (#4 or #5 writes one) |
+| 7 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
 timeout and the stream transfer fails with "not found".
 
-**#4 is independent** of the FTPS/SFTP chain — it needs only an Azure Blob
-connection and a blob to find.
+**#4/#5 → #6 chain**: #4 and #5 both write a blob into the container, and #6 finds
+it there. #4 needs a file in its SFTP source directory first — see
+[SFTP source directory](#sftp-source-directory-4); #3 delivers into the SFTP
+user's `incoming/`, so pointing #4 at that path chains all three. #5 reads from
+the FTPS server, so it only needs #1 to have run.
 
-**#5 needs no connection at all** and is the only scheduled DAG here; the rest are
+**#4 and #5 are the same problem with different plumbing** — read them together.
+The source API decides the design: SFTP hands back a readable object, so the
+destination pulls straight from it; FTPS pushes to a callback, so a pipe has to
+sit in between. See [Push versus pull](#push-versus-pull-why-5-needs-a-pipe).
+
+**#7 needs no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -47,7 +65,7 @@ them in one place at the top of each file if yours differ.
 |---|---|---|
 | `ftps_test_001` | **`FTP`** | host, login, password, port `21` |
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
-| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4 only) |
+| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6) |
 
 For SAS auth, put the token in the connection's **extra** as
 `{"sas_token": "?sp=...&sig=..."}` and set **login to the storage account name** —
@@ -77,8 +95,9 @@ laptop (VPN, `/etc/hosts`, mesh network) often does not resolve inside the clust
 ### Providers
 
 ```
-apache-airflow-providers-ftp
-apache-airflow-providers-sftp     # for #3
+apache-airflow-providers-ftp                 # for #1, #2, #3, #5
+apache-airflow-providers-sftp                # for #3, #4
+apache-airflow-providers-microsoft-azure     # for #4, #5, #6
 ```
 
 Both must be in the **Airflow image**, not just your local venv — they cannot be
@@ -89,6 +108,21 @@ Both must be in the **Airflow image**, not just your local venv — they cannot 
 `files/probe.txt` ships with the repo and is uploaded by #1. The DAG folder is
 mounted into every pod, so `dags/files/` is readable at
 `<AIRFLOW_HOME>/dags/files/` at runtime.
+
+### SFTP source directory (#4)
+
+#4 reads from a directory on the **SFTP server** — not from `dags/files/`. Create
+it and drop a file in before the first run:
+
+```bash
+sftp <sftp-user>@<sftp-host>
+sftp> mkdir outgoing
+sftp> put probe.txt outgoing/
+```
+
+The directory must exist and the connection's user must be able to read it. Note
+that #4's default source is the SFTP user's `outgoing/`, while #3 *delivers* into
+`incoming/` — point #4 at `incoming/` if you want to chain them directly.
 
 ---
 
@@ -190,7 +224,229 @@ real pickup pattern, delete only after the verify step confirms the size matches
 
 ---
 
-## 4. `dag_wasb_prefix_suffix_sensor.py`
+## 4. `dag_sftp_to_blob_stream.py`
+
+`nix-dag-sftp-to-blob-stream` — streams a file from SFTP into an Azure Blob
+container without staging it on disk.
+
+```
+SFTP  ──open──▶  stream  ──upload──▶  Blob container
+```
+
+```bash
+airflow dags trigger nix-dag-sftp-to-blob-stream \
+  --conf '{"source_path":"/home/airflowsftp/outgoing/probe.*","blob_prefix":"incoming/"}'
+```
+
+`source_path` must be a **directory or a wildcard**, never a bare filename — see
+the trap below. `.../outgoing/*.csv` transfers a whole matching set in one run.
+
+**Pattern: override the one method that is wrong, keep the rest of the operator.**
+The provider *does* ship `SFTPToWasbOperator` — but its `copy_files_to_wasb`
+downloads each file to a `NamedTemporaryFile` before uploading it, so the full file
+lands on the worker pod's disk. Only that method needs replacing:
+
+```python
+class StreamingSFTPToWasbOperator(SFTPToWasbOperator):
+    def copy_files_to_wasb(self, sftp_files):
+        # get_managed_conn(), not get_conn() — see trap 2
+        with self.sftp_hook.get_managed_conn() as sftp_client:
+            for file in sftp_files:
+                size = sftp_client.stat(file.sftp_file_path).st_size
+                with sftp_client.open(file.sftp_file_path, "rb") as remote:
+                    remote.prefetch(size)       # else one round-trip per read
+                    wasb_hook.upload(
+                        container_name=..., blob_name=..., data=remote,
+                        length=size,
+                        max_concurrency=1,      # >1 needs a seekable source
+                    )
+```
+
+Wildcard expansion, blob naming, templated fields and `move_object` are all
+inherited unchanged — a future provider fix to any of them still applies here.
+
+**`WasbHook.upload` takes a file object, not just a path.** It reads a 4 MiB block,
+uploads it, then reads the next, so peak memory is one block regardless of file
+size. Contrast #3, which needed an `os.pipe()` because neither side would accept a
+stream — here the destination pulls, so no pipe or thread is needed.
+
+`length=size` is load-bearing: it lets the SDK skip seeking the stream to measure
+it, which an SFTP handle would fail. So is `max_concurrency=1` — parallel block
+upload seeks the source to split it, and the default would break on a
+non-seekable read.
+
+### Three traps, each hidden behind the last
+
+All three parse cleanly, pass the integrity tests, and only fail against a live
+server. Each one's error message points somewhere other than the real cause.
+
+**1. A bare filename in `source_path` fails as "file not found".** With no `*`, the
+inherited `get_tree_behavior` passes the path straight to `SFTPHook.get_tree_map`,
+which `listdir`s it. `listdir` on a regular file returns SFTP status 2:
+
+```
+FileNotFoundError: [Errno 2] No such file
+  ... get_tree_map -> walktree -> list_directory_with_attr -> listdir_attr
+```
+
+The file is right there and readable. `walktree`/`listdir_attr` in the traceback
+means *"not a directory"*, not *"not found"*.
+
+**2. `get_conn()` hands back a closed socket.** Every decorated `SFTPHook` method
+wraps itself in `handle_connection_management`, which enters `get_managed_conn()`
+and **closes the session on exit**. The inherited `get_sftp_files_map()` lists the
+source that way, so the connection is already shut before the copy starts:
+
+```
+OSError: Socket is closed
+  ... copy_files_to_wasb -> sftp_client.stat -> _send_packet -> channel.send
+```
+
+Use `get_managed_conn()`. It is refcounted, so opening it once around the whole
+loop holds one session for every file instead of reconnecting per file.
+
+**3. `max_block_size` is not an upload argument.** It reads as one, but it comes
+from the *client's* `StorageConfiguration`. `upload_blob()` forwards unrecognised
+kwargs down the pipeline until they reach the HTTP transport:
+
+```
+TypeError: Session.request() got an unexpected keyword argument 'max_block_size'
+```
+
+The SDK's 4 MiB default is the block size you want anyway; changing it means
+configuring the `BlobServiceClient`, which `WasbHook` builds internally.
+`max_concurrency`, by contrast, *is* a real per-call parameter.
+
+**`wasb_overwrite_object=True`** so a retry can replace a partial blob left by a
+task that died mid-upload. **The source is not deleted** (`move_object=False`), so
+re-running re-sends; flip it once you trust the verify step.
+
+---
+
+## 5. `dag_ftps_to_blob_stream.py`
+
+`nix-dag-ftps-to-blob-stream` — streams a file from FTPS into an Azure Blob
+container without staging it on disk.
+
+```
+FTPS  ──retrbinary──▶  os.pipe()  ──upload──▶  Blob container
+```
+
+```bash
+airflow dags trigger nix-dag-ftps-to-blob-stream \
+  --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'
+```
+
+Needs a file on the FTPS server, so run #1 first. A successful run logs the two
+ends of the transfer and the independent check:
+
+```
+[ftps_to_blob] streaming /upload/probe.txt -> wasb://data001/incoming/probe.txt (205 bytes)
+[ftps_to_blob] transferred 205 bytes to incoming/probe.txt
+[ftps_to_blob] verified incoming/probe.txt — 205 bytes
+```
+
+The byte count appears three times on purpose — reported by FTPS, counted through
+the pipe, then read back from Azure in a separate pod. A truncated transfer breaks
+the chain and fails the run instead of passing quietly.
+
+**Pattern: when no provider operator exists, write one.** #4 could subclass
+`SFTPToWasbOperator`; there is no FTP/FTPS equivalent here. The `microsoft-azure`
+provider ships only `sftp_to_wasb`, `s3_to_wasb`, `local_to_wasb` and
+`oracle_to_azure_data_lake`. Check before assuming symmetry — "there's an SFTP
+one, so there's an FTP one" is wrong.
+
+So `FTPStoBlobStreamOperator` subclasses `BaseOperator` (from **`airflow.sdk`** in
+3.x) directly. That is worth doing over a `PythonOperator` for three reasons:
+
+```python
+class FTPStoBlobStreamOperator(BaseOperator):
+    template_fields = ("remote_path", "container_name", "blob_name")
+
+    def __init__(self, *, ftp_conn_id, wasb_conn_id, remote_path,
+                 container_name, blob_name, overwrite=True, **kwargs):
+        super().__init__(**kwargs)
+        ...
+
+    @cached_property                    # built on use, not at parse time
+    def ftps_hook(self): return MyFTPSHook(ftp_conn_id=self.ftp_conn_id)
+
+    def execute(self, context): ...
+```
+
+- **Templated fields** render from `dag_run.conf`, so the resolved paths show up
+  in the UI's *Rendered Template* tab. A callable that reads `dag_run.conf`
+  internally shows nothing there — you cannot see what path a past run used.
+  Here `remote_path` is authored as
+  `/upload/{{ dag_run.conf.get('filename', 'probe.txt') }}` and renders to
+  `/upload/probe.txt`, which is what the tab shows after the run.
+- **Configuration is constructor arguments**, so a second task streaming a
+  different file is one more operator call, not a second copy of the function.
+- **Hooks are `cached_property`**, so building the operator at parse time opens
+  no connection.
+
+### Push versus pull: why #5 needs a pipe
+
+This is the interesting difference between #4 and #5, and it is decided entirely
+by which side controls the loop:
+
+| | source API | destination API | bridge |
+|---|---|---|---|
+| #4 SFTP → Blob | `open()` returns a readable | `upload()` reads | none needed |
+| #5 FTPS → Blob | `retrbinary()` **pushes** to a callback | `upload()` **pulls** | `os.pipe()` |
+
+`ftplib` never hands back a file object — it calls a callback per chunk. Azure's
+`upload()` wants something to `read()`. Two pushers and no puller, so a pipe sits
+between them, with `retrbinary` writing one end and `upload` reading the other
+from a worker thread:
+
+```python
+read_fd, write_fd = os.pipe()
+
+def _upload():
+    with os.fdopen(read_fd, "rb") as reader:
+        wasb_hook.upload(container_name=..., blob_name=..., data=reader,
+                         length=expected,      # required — a pipe cannot be seeked
+                         max_concurrency=1)
+
+uploader = threading.Thread(target=_upload, daemon=True); uploader.start()
+try:
+    with os.fdopen(write_fd, "wb") as writer:
+        ftps.get_conn().retrbinary(f"RETR {src}", writer.write, blocksize=8192)
+finally:
+    uploader.join(timeout=300)   # outside the `with` — closing it is what signals EOF
+```
+
+Three details that are easy to get wrong:
+
+- **`join()` must be outside the `with`.** Closing the write end is what raises
+  EOF for the reader. Joining inside would wait forever on a reader that can
+  never see the stream end.
+- **A thread cannot raise into its caller.** The upload exception is stashed in a
+  list and re-raised on the main thread; without that the task passes green while
+  the upload silently failed.
+- **`length=` is mandatory for a pipe.** Without it the SDK tries to seek the
+  stream to measure it, which a pipe cannot do.
+- **`BrokenPipeError` must be swallowed, not raised.** If the upload fails early
+  the reader closes, and the next FTPS write — or the `with` block's own close —
+  raises `BrokenPipeError`, which would mask the real cause. Catch it, then
+  re-raise the stashed upload exception so the log says *"azure exploded"* rather
+  than *"Broken pipe"*.
+
+The pipe also gives **backpressure** for free: if Azure is slower than the FTPS
+read, the pipe fills, the write blocks, and the two sides self-throttle to the
+slower one rather than buffering the difference.
+
+**One honest caveat about memory.** The transfer itself moves 8 KiB at a time, but
+the Azure SDK does a **single-shot upload** for blobs at or under
+`max_single_put_size` (64 MiB by default), and that path does one
+`stream.read(length)` — buffering the whole file. Above that threshold it switches
+to block upload and streams in constant memory. So: constant-memory for large
+files, up-to-64-MiB-buffered for small ones.
+
+---
+
+## 6. `dag_wasb_prefix_suffix_sensor.py`
 
 `nix-dag-wasb-prefix-suffix-sensor` — waits for an Azure blob matching **both** a
 prefix and a suffix.
@@ -228,7 +484,7 @@ different set.
 
 ---
 
-## 5. `dag_cyclic.py`
+## 7. `dag_cyclic.py`
 
 `nix-dag-cyclic` — a **cyclic job** in the Control-M sense: fires every 5 minutes,
 with only one run ever active. The task sleeps 4 minutes to stand in for real work.
@@ -322,6 +578,10 @@ airflow dags unpause <dag_id>
 ```
 
 Allow time for the DAG processor to pick up a new file before assuming it failed.
+It parses the whole DAG folder on a cycle, so on a busy instance a new file can
+take **minutes**, not seconds, to appear. Absent from the UI *and* absent from
+`list-import-errors` means "not parsed yet" — a genuinely broken file shows up in
+the import-error list rather than staying invisible.
 
 ---
 
@@ -340,6 +600,33 @@ DAG and every task, `catchup=False`, no top-level I/O, standalone files.
 
 A clean local parse does not prove a third-party import exists in the **server**
 image. Check import errors after deploying.
+
+### What a parse check cannot catch
+
+Every bug worth reading about in this file parsed cleanly and passed the integrity
+tests. They only failed against a live server:
+
+| Bug | Where it surfaces |
+|---|---|
+| a path that is a file where a directory is expected | first `listdir` |
+| a hook whose connection was already closed | first call on the dead client |
+| a kwarg the SDK forwards to its HTTP transport | inside the request |
+| a provider missing from the server image | dag-processor import |
+
+So treat the local checks as a fast filter, not proof. The first real run against
+the target systems is the actual test.
+
+For the threaded parts specifically — the `os.pipe()` bridge in #5 — a parse proves
+nothing at all: a deadlock or a swallowed exception looks identical to working code
+until it runs. Those are worth exercising directly against fake hooks, feeding
+`execute()` a fake that pushes known bytes and asserting on what the fake upload
+received, plus one case per failure mode (source missing, oversize, upload raises,
+truncated read).
+
+That is how #5's `BrokenPipeError` masking was found — the happy path passed on the
+first try, and only the "upload raises" case revealed that the real error was being
+hidden behind a broken pipe. It would have looked fine in any test that only
+transfers a file successfully.
 
 ---
 
@@ -417,6 +704,11 @@ them.
 | `550` from FTPS | file not there — run #1 first |
 | `553 Could not create file` | wrote to a read-only directory; FTPS chroots often make the root non-writable |
 | Data transfer hangs after login | passive-mode port range not reachable from the worker |
+| `ResourceExistsError` on upload | blob already there and `wasb_overwrite_object=False` |
+| `unsupported operation: seek` on upload | streaming a non-seekable source with `max_concurrency` > 1 |
+| `FileNotFoundError` from `listdir_attr`, file exists | #4 `source_path` is a bare filename — needs a directory or `*` |
+| `OSError: Socket is closed` mid-transfer | used `get_conn()` after a hook method closed the managed session |
+| `Session.request() got an unexpected keyword argument` | passed a client-config kwarg (e.g. `max_block_size`) to `upload()` |
 | DAG missing from UI, no import error | processor has not parsed it yet |
 | DAG present but never runs | still paused |
 | Works locally, fails on the server | provider missing from the server image, or a connection/variable not set |
