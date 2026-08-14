@@ -1,5 +1,7 @@
 # `dag_ftps_simple_transfer.py`
 
+📄 **[Source: `dag_ftps_simple_transfer.py`](../dag_ftps_simple_transfer.py)**
+
 
 `nix-dag-ftps-simple-transfer` — uploads a file from the DAG folder to FTPS.
 

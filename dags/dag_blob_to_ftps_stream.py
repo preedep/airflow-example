@@ -71,6 +71,23 @@ constant memory.
 `MAX_BYTES` caps a single transfer; a larger blob fails before any bytes move
 rather than running unbounded.
 
+#### Write-then-rename
+
+The transfer writes to `<remote_path>.part` and renames it once the last byte
+lands, so a consumer polling the directory never sees a partial file and a failed
+run leaves an obvious `.part` rather than a truncated file that looks complete.
+The rename is a metadata operation (RNFR/RNTO), so no data is re-transferred.
+`temp_suffix=""` disables it.
+
+One caveat worth knowing: whether `rename` overwrites an existing target is
+**server-dependent**. It does on the server tested here; a stricter server may
+require deleting the target first. SFTP has the same split — plain `rename`
+fails on an existing target, which is why the SFTP demos use `posix_rename`.
+
+The object-store demos do **not** do this: neither Blob nor S3 has a rename, so
+the equivalent would be a full server-side copy — and neither makes a
+partially-uploaded object visible in the first place.
+
 #### Idempotency
 
 `STOR` truncates and replaces an existing file, so a retry overwrites whatever a
@@ -198,6 +215,9 @@ class BlobToFTPSStreamOperator(BaseOperator):
         directory must already exist and be writable.
     :param max_bytes: reject a blob larger than this before any bytes move.
     :param chunk_size: bytes per `storbinary` read.
+    :param temp_suffix: write to `<remote_path><temp_suffix>` and rename on
+        success, so a consumer never sees a partial file. Set to "" to write
+        directly to the final name.
     """
 
     # Rendered from dag_run.conf at run time, which is why the paths are operator
@@ -217,6 +237,7 @@ class BlobToFTPSStreamOperator(BaseOperator):
         remote_path: str,
         max_bytes: int = MAX_BYTES,
         chunk_size: int = CHUNK_SIZE,
+        temp_suffix: str = ".part",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -227,6 +248,7 @@ class BlobToFTPSStreamOperator(BaseOperator):
         self.remote_path = remote_path
         self.max_bytes = max_bytes
         self.chunk_size = chunk_size
+        self.temp_suffix = temp_suffix
 
     # cached_property, matching the provider convention: the hook is built on
     # first use rather than in __init__, so constructing the operator at DAG
@@ -272,13 +294,28 @@ class BlobToFTPSStreamOperator(BaseOperator):
 
         # The hook's context manager closes the FTPS session on exit, so the
         # whole transfer happens inside it.
+        # Write to a temporary name and rename once the transfer completes, so a
+        # consumer watching the directory never sees a partial file and a failed
+        # run leaves an obvious <name>.part rather than a truncated file.
+        target = self.remote_path + self.temp_suffix if self.temp_suffix else self.remote_path
+
         with self.ftps_hook as ftps:
+            conn = ftps.get_conn()
             # storbinary drives the transfer, calling downloader.read() per
             # block until it returns empty. STOR truncates any existing file,
             # which is what makes a retry replace rather than append.
-            response = ftps.get_conn().storbinary(
-                f"STOR {self.remote_path}", downloader, blocksize=self.chunk_size
+            response = conn.storbinary(
+                f"STOR {target}", downloader, blocksize=self.chunk_size
             )
+
+            if self.temp_suffix:
+                # RNFR/RNTO. Unlike SFTP's plain rename, this overwrites an
+                # existing target on the servers tested here — but that is
+                # server-dependent, so a strict server may need a delete first.
+                conn.rename(target, self.remote_path)
+                self.log.info(
+                    "[blob_to_ftps] renamed %s -> %s", target, self.remote_path
+                )
 
         self.log.info(
             "%s -> %s (%s)",

@@ -1,5 +1,7 @@
 # `dag_blob_to_s3_stream.py`
 
+📄 **[Source: `dag_blob_to_s3_stream.py`](../dag_blob_to_s3_stream.py)**
+
 `nix-dag-blob-to-s3-stream` — streams a blob from Azure Blob Storage to Amazon S3
 without staging it on disk.
 

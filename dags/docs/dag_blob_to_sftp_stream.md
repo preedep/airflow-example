@@ -1,5 +1,7 @@
 # `dag_blob_to_sftp_stream.py`
 
+📄 **[Source: `dag_blob_to_sftp_stream.py`](../dag_blob_to_sftp_stream.py)**
+
 
 `nix-dag-blob-to-sftp-stream` — streams a blob back out of Azure Blob Storage to
 the SFTP server.

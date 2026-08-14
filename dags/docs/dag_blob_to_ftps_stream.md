@@ -1,5 +1,7 @@
 # `dag_blob_to_ftps_stream.py`
 
+📄 **[Source: `dag_blob_to_ftps_stream.py`](../dag_blob_to_ftps_stream.py)**
+
 
 `nix-dag-blob-to-ftps-stream` — streams a blob out of Azure Blob Storage to the
 FTPS server.
