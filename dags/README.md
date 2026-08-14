@@ -308,6 +308,87 @@ boto3 tolerates a non-seekable source where the Azure SDK does not.
 
 ---
 
+## Running them
+
+All except #11 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
+the CLI:
+
+```bash
+airflow dags unpause <dag_id>          # new DAGs land paused
+airflow dags trigger <dag_id> --conf '{...}'
+```
+
+Every DAG has usable defaults, so `--conf` is optional — the commands below show
+the default fixture on the left and a larger file on the right.
+
+| # | Trigger |
+|---|---|
+| 1 | `airflow dags trigger nix-dag-ftps-simple-transfer` |
+| 2 | `airflow dags trigger nix-dag-ftps-sensor --conf '{"filename":"probe.txt"}'` |
+| 3 | `airflow dags trigger nix-dag-ftps-to-sftp-stream --conf '{"filename":"probe.txt"}'` |
+| 4 | `airflow dags trigger nix-dag-sftp-to-blob-stream --conf '{"source_path":"<sftp-dir>/probe.*","blob_prefix":"incoming/"}'` |
+| 5 | `airflow dags trigger nix-dag-ftps-to-blob-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'` |
+| 6 | `airflow dags trigger nix-dag-blob-to-sftp-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'` |
+| 7 | `airflow dags trigger nix-dag-wasb-prefix-suffix-sensor --conf '{"prefix":"incoming/","suffix":".csv"}'` |
+| 8 | `airflow dags trigger nix-dag-blob-to-ftps-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'` |
+| 9 | `airflow dags trigger nix-dag-s3-prefix-suffix-sensor --conf '{"prefix":"probe/","suffix":".txt"}'` |
+| 10 | `airflow dags trigger nix-dag-blob-to-s3-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/","s3_prefix":"incoming/"}'` |
+| 11 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
+
+### Testing with a large file
+
+The bundled `probe.txt` is 118 bytes, which proves the wiring but says nothing
+about throughput. To exercise the streaming path, put a larger file on the source
+system and pass its name — nothing in the DAGs is size-specific.
+
+```bash
+# a 50 MiB fixture; use random data, not zeros — compressible filler lets TLS
+# compression inflate the apparent throughput
+dd if=/dev/urandom of=large50.bin bs=1m count=50
+
+sftp <user>@<host>   # then: put large50.bin outgoing/
+# and/or upload it to the FTPS server and the blob container
+```
+
+Then trigger with that filename:
+
+```bash
+airflow dags trigger nix-dag-ftps-to-sftp-stream  --conf '{"filename":"large50.bin"}'
+airflow dags trigger nix-dag-sftp-to-blob-stream  --conf '{"source_path":"<sftp-dir>/large50.*","blob_prefix":"large/"}'
+airflow dags trigger nix-dag-ftps-to-blob-stream  --conf '{"filename":"large50.bin","blob_prefix":"large/"}'
+airflow dags trigger nix-dag-blob-to-sftp-stream  --conf '{"filename":"large50.bin","blob_prefix":"large/"}'
+airflow dags trigger nix-dag-blob-to-ftps-stream  --conf '{"filename":"large50.bin","blob_prefix":"large/"}'
+airflow dags trigger nix-dag-blob-to-s3-stream    --conf '{"filename":"large50.bin","blob_prefix":"large/","s3_prefix":"large/"}'
+```
+
+Two things that catch people out:
+
+- **#4 needs a wildcard**, `large50.*` and not `large50.bin` — a bare filename
+  hits the `listdir`-on-a-file trap described in
+  [its page](docs/dag_sftp_to_blob_stream.md).
+- **`blob_prefix` must match where the blob actually is.** The Blob-source DAGs
+  read `<blob_prefix><filename>`, so a file uploaded under `large/` needs
+  `"blob_prefix":"large/"`, not the `incoming/` default.
+
+Each transfer logs a summary line, which is where the throughput comparison
+lives:
+
+```
+[blob_to_ftps] done: 50.0 MiB in 3.7s (13.7 MiB/s) -> /upload/large50.bin
+```
+
+Expect the pipe-based #5 to be markedly slower than the direct-compose paths: it
+moves 8 KiB at a time, while #4 uses 4 MiB blocks and #10 uses 8 MiB parts. That
+difference is the point of the
+[chunking table](#how-the-streaming-dags-chunk).
+
+**A 50 MiB file does not exercise #5's block-upload path.** Azure switches from a
+single buffered `read()` to streaming block upload above `max_single_put_size`
+(64 MiB default), so a file *over* that threshold — say 100 MiB — is what proves
+constant-memory behaviour there. Every other DAG streams at any size.
+
+---
+
 ## How the streaming DAGs chunk
 
 "Streaming" here always means **chunked**: one side reads a chunk, the other
