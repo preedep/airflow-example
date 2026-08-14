@@ -19,6 +19,7 @@ dependencies = [
     "apache-airflow-providers-sftp==5.7.3",
     "apache-airflow-providers-microsoft-azure==13.1.1",
     "apache-airflow-providers-amazon==9.25.0",
+    "apache-airflow-providers-samba==4.12.6",
 ]
 
 [dependency-groups]

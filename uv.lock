@@ -145,6 +145,7 @@ dependencies = [
     { name = "apache-airflow-providers-http" },
     { name = "apache-airflow-providers-microsoft-azure" },
     { name = "apache-airflow-providers-postgres" },
+    { name = "apache-airflow-providers-samba" },
     { name = "apache-airflow-providers-sftp" },
     { name = "apache-airflow-providers-standard" },
     { name = "pendulum" },
@@ -167,6 +168,7 @@ requires-dist = [
     { name = "apache-airflow-providers-http", specifier = "==6.0.2" },
     { name = "apache-airflow-providers-microsoft-azure", specifier = "==13.1.1" },
     { name = "apache-airflow-providers-postgres", specifier = "==6.6.3" },
+    { name = "apache-airflow-providers-samba", specifier = "==4.12.6" },
     { name = "apache-airflow-providers-sftp", specifier = "==5.7.3" },
     { name = "apache-airflow-providers-standard", specifier = "==1.12.3" },
     { name = "pendulum", specifier = "==3.2.0" },
@@ -483,6 +485,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/fc/fa/ff9c18754b482e612a548c114c43804c4275c0175fd7a12ad8ae7599deb3/apache_airflow_providers_postgres-6.6.3.tar.gz", hash = "sha256:f9013dfd5d57723d3245779ad8d9d1b586bcf928024611ff9c22db3861121bcf", size = 62537, upload-time = "2026-04-12T14:22:33.321Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/69/7b/6b610a69c2bba38dfac1679b7b27b8f368b69230764d98bf8ddba4109eda/apache_airflow_providers_postgres-6.6.3-py3-none-any.whl", hash = "sha256:b61aaf332907fff7aad11c9d3841279a8e828c3b04397cb480621178bc3c4f12", size = 24027, upload-time = "2026-04-12T14:20:56.792Z" },
+]
+
+[[package]]
+name = "apache-airflow-providers-samba"
+version = "4.12.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-airflow" },
+    { name = "apache-airflow-providers-common-compat" },
+    { name = "smbprotocol" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/56/56/baec48345aa629215825df830c5da85aac33ab627bcdd0a0b12b0048a78d/apache_airflow_providers_samba-4.12.6.tar.gz", hash = "sha256:cd0c4ad4c8614bd2f64e2f232a26fc9d9bcb0a48b12d70c535e19adf125c4fcc", size = 37741, upload-time = "2026-06-07T09:44:28.291Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/95/6f/e680527b20abc6f3e2feb13f96fb04a8d4fdf3d0cb865bf54ced08b91216/apache_airflow_providers_samba-4.12.6-py3-none-any.whl", hash = "sha256:d4f19f86c6ebf47ba5d8f9c2c8f3df7bf6cbd7f774081192877d029ba0a72135", size = 18597, upload-time = "2026-06-07T09:43:18.147Z" },
 ]
 
 [[package]]
@@ -2640,6 +2656,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pyspnego"
+version = "0.12.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "sspilib", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7d/84/58577bd1b14293650879de0579ec263a1d8350f1d6d227226cf776b5a6a6/pyspnego-0.12.1.tar.gz", hash = "sha256:ff4fb6df38202a012ea2a0f43091ae9680878443f0ea61c9ea0e2e8152a4b810", size = 226027, upload-time = "2026-03-02T20:16:09.74Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/9f/4da6a1b9611af2397289b77d6fd08f5fe8f1f34dabc3bf85b0638d655e64/pyspnego-0.12.1-py3-none-any.whl", hash = "sha256:7237cb47985ccf5da512106ddb2731e4f9cefec00991f76c054488eb95fb1a2d", size = 130247, upload-time = "2026-03-02T20:16:08.331Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3018,6 +3047,19 @@ wheels = [
 ]
 
 [[package]]
+name = "smbprotocol"
+version = "1.17.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "pyspnego" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0e/ff/1a86a76423210bc9558e6ea978c576b13da448644401f16ee2260d4d3316/smbprotocol-1.17.0.tar.gz", hash = "sha256:bcc27edfff7d727a7eb30424138766e1ee216ae2ffc1af03dab0448f29c4731c", size = 190845, upload-time = "2026-07-07T03:23:20.523Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/d3/250e13e7b3473a0f441f4d680d511ad30ce432d0180115dec9840d88fe89/smbprotocol-1.17.0-py3-none-any.whl", hash = "sha256:bd1abff5417f5af83ca516a64ab8e5acece3dbdcf58d4e5e23e47f5165a77349", size = 128208, upload-time = "2026-07-07T03:23:19.178Z" },
+]
+
+[[package]]
 name = "sniffio"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3067,6 +3109,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/90/76/437d71068094df0726366574cf3432a4ed754217b436eb7429415cf2d480/sqlparse-0.5.5.tar.gz", hash = "sha256:e20d4a9b0b8585fdf63b10d30066c7c94c5d7a7ec47c889a2d83a3caa93ff28e", size = 120815, upload-time = "2025-12-19T07:17:45.073Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/4b/359f28a903c13438ef59ebeee215fb25da53066db67b305c125f1c6d2a25/sqlparse-0.5.5-py3-none-any.whl", hash = "sha256:12a08b3bf3eec877c519589833aed092e2444e68240a3577e8e26148acc7b1ba", size = 46138, upload-time = "2025-12-19T07:17:46.573Z" },
+]
+
+[[package]]
+name = "sspilib"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/e6/d0d74b18bed8c16949fddc0401005c072947ae7bf1bab982ed28f9ebc2d8/sspilib-0.5.0.tar.gz", hash = "sha256:b62f7f2602aa1add0505eee2417e2df24421224cb411e53bf3ae42a71b62fe98", size = 59920, upload-time = "2025-12-03T00:31:05.564Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/1b/dd9066491168933b0f7ab6e396ac58cc024c8954e95264c38e3dc9363d7c/sspilib-0.5.0-cp311-abi3-win32.whl", hash = "sha256:fcb57b41b3200ef2e6e8846e2a13799d20b35b796267f2f75cc65e3883e8eeb6", size = 451246, upload-time = "2025-12-03T00:30:36.685Z" },
+    { url = "https://files.pythonhosted.org/packages/17/6a/a11abf90172ff580ac2f9ade3496d868e05e851c4ecf487dd5baeb966b1d/sspilib-0.5.0-cp311-abi3-win_amd64.whl", hash = "sha256:ca2a21a4e90db563c2cec639c66b3a29ea53129a0c55ff1e4154a02937f6bd45", size = 540777, upload-time = "2025-12-03T00:30:38.44Z" },
+    { url = "https://files.pythonhosted.org/packages/45/05/983876d281b9e7926f1c9126e72de8bd5928b1de45433163f54d4e217502/sspilib-0.5.0-cp311-abi3-win_arm64.whl", hash = "sha256:6893bad16f122fc3c4bd908461b9728694465c05ca97c22f7e2094791c4ee3cb", size = 470353, upload-time = "2025-12-03T00:30:39.63Z" },
 ]
 
 [[package]]
