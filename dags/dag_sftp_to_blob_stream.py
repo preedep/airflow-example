@@ -1,6 +1,7 @@
 """nix-dag-sftp-to-blob-stream — stream a file from the SFTP server to Azure Blob Storage."""
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -204,6 +205,7 @@ class StreamingSFTPToWasbOperator(SFTPToWasbOperator):
                 # The remote file object is the upload source. upload() reads it
                 # in max_block_size chunks and stages each as a block, so neither
                 # side ever holds the whole file.
+                started = time.monotonic()
                 with sftp_client.open(file.sftp_file_path, "rb") as remote:
                     # Without prefetch paramiko waits a full round-trip per read,
                     # which caps throughput at chunk/latency regardless of bandwidth.
@@ -228,6 +230,12 @@ class StreamingSFTPToWasbOperator(SFTPToWasbOperator):
                         **self.load_options,
                     )
 
+                self.log.info(
+                    "%s -> %s",
+                    _summary("sftp_to_blob", size, time.monotonic() - started),
+                    file.blob_name,
+                )
+
                 uploaded_files.append(file.sftp_file_path)
                 transferred.append(
                     {"source": file.sftp_file_path, "blob": file.blob_name, "size": size}
@@ -242,6 +250,24 @@ class StreamingSFTPToWasbOperator(SFTPToWasbOperator):
     def execute(self, context) -> list[dict[str, Any]]:
         super().execute(context)
         return self.transferred
+
+
+def _human(num_bytes: int) -> str:
+    """Format a byte count for logs: 52428800 -> '50.0 MiB'."""
+    size = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _summary(label: str, num_bytes: int, elapsed: float) -> str:
+    """One-line transfer summary: size, wall time, and throughput."""
+    # Guard against a divide-by-zero on a transfer that completes inside the
+    # clock's resolution — a tiny fixture on a fast link really can.
+    rate = f"{num_bytes / elapsed / 1024 / 1024:.1f} MiB/s" if elapsed > 0 else "n/a"
+    return f"[{label}] done: {_human(num_bytes)} in {elapsed:.1f}s ({rate})"
 
 
 # --------------------------------------------------------------------------- #

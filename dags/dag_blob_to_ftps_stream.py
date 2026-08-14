@@ -3,6 +3,7 @@
 import ftplib
 import logging
 import ssl
+import time
 from datetime import datetime, timedelta
 from functools import cached_property
 from typing import Any
@@ -260,6 +261,8 @@ class BlobToFTPSStreamOperator(BaseOperator):
             expected,
         )
 
+        started = time.monotonic()
+
         # download() returns a StorageStreamDownloader, whose read(size) returns
         # bytes and empty at EOF — exactly what storbinary's read loop expects.
         # No pipe or thread: one side reads, the other pulls.
@@ -278,8 +281,8 @@ class BlobToFTPSStreamOperator(BaseOperator):
             )
 
         self.log.info(
-            "[blob_to_ftps] transferred %s bytes to %s (%s)",
-            expected,
+            "%s -> %s (%s)",
+            _summary("blob_to_ftps", expected, time.monotonic() - started),
             self.remote_path,
             response,
         )
@@ -288,6 +291,24 @@ class BlobToFTPSStreamOperator(BaseOperator):
             "destination": self.remote_path,
             "size": expected,
         }
+
+
+def _human(num_bytes: int) -> str:
+    """Format a byte count for logs: 52428800 -> '50.0 MiB'."""
+    size = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _summary(label: str, num_bytes: int, elapsed: float) -> str:
+    """One-line transfer summary: size, wall time, and throughput."""
+    # Guard against a divide-by-zero on a transfer that completes inside the
+    # clock's resolution — a tiny fixture on a fast link really can.
+    rate = f"{num_bytes / elapsed / 1024 / 1024:.1f} MiB/s" if elapsed > 0 else "n/a"
+    return f"[{label}] done: {_human(num_bytes)} in {elapsed:.1f}s ({rate})"
 
 
 # --------------------------------------------------------------------------- #

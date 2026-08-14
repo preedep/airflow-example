@@ -1,6 +1,7 @@
 """nix-dag-blob-to-s3-stream — stream a blob from Azure Blob Storage to Amazon S3."""
 
 import logging
+import time
 from datetime import datetime, timedelta
 from functools import cached_property
 from typing import Any
@@ -218,6 +219,8 @@ class BlobToS3StreamOperator(BaseOperator):
             expected,
         )
 
+        started = time.monotonic()
+
         # download() returns a StorageStreamDownloader: read() but no seek().
         # boto3's transfer manager reads sequentially into per-part buffers
         # rather than seeking the source, so a non-seekable stream is fine here
@@ -236,8 +239,8 @@ class BlobToS3StreamOperator(BaseOperator):
         )
 
         self.log.info(
-            "[blob_to_s3] transferred %s bytes to s3://%s/%s",
-            expected,
+            "%s -> s3://%s/%s",
+            _summary("blob_to_s3", expected, time.monotonic() - started),
             self.bucket_name,
             self.key,
         )
@@ -247,6 +250,24 @@ class BlobToS3StreamOperator(BaseOperator):
             "key": self.key,
             "size": expected,
         }
+
+
+def _human(num_bytes: int) -> str:
+    """Format a byte count for logs: 52428800 -> '50.0 MiB'."""
+    size = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _summary(label: str, num_bytes: int, elapsed: float) -> str:
+    """One-line transfer summary: size, wall time, and throughput."""
+    # Guard against a divide-by-zero on a transfer that completes inside the
+    # clock's resolution — a tiny fixture on a fast link really can.
+    rate = f"{num_bytes / elapsed / 1024 / 1024:.1f} MiB/s" if elapsed > 0 else "n/a"
+    return f"[{label}] done: {_human(num_bytes)} in {elapsed:.1f}s ({rate})"
 
 
 # --------------------------------------------------------------------------- #

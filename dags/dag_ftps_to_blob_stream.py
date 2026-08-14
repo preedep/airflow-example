@@ -3,6 +3,7 @@
 import ftplib
 import logging
 import ssl
+import time
 from datetime import datetime, timedelta
 from functools import cached_property
 from typing import Any
@@ -265,6 +266,8 @@ class FTPStoBlobStreamOperator(BaseOperator):
         import os
         import threading
 
+        started = time.monotonic()
+
         with self.ftps_hook as ftps:
             # Size up front for two reasons: it rejects an oversized file before
             # any bytes move, and Azure needs `length` to upload a non-seekable
@@ -377,8 +380,30 @@ class FTPStoBlobStreamOperator(BaseOperator):
                 f"size mismatch for {self.remote_path}: read {sent}, expected {expected}"
             )
 
-        self.log.info("[ftps_to_blob] transferred %s bytes to %s", sent, self.blob_name)
+        self.log.info(
+            "%s -> %s",
+            _summary("ftps_to_blob", sent, time.monotonic() - started),
+            self.blob_name,
+        )
         return {"source": self.remote_path, "blob": self.blob_name, "size": sent}
+
+
+def _human(num_bytes: int) -> str:
+    """Format a byte count for logs: 52428800 -> '50.0 MiB'."""
+    size = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _summary(label: str, num_bytes: int, elapsed: float) -> str:
+    """One-line transfer summary: size, wall time, and throughput."""
+    # Guard against a divide-by-zero on a transfer that completes inside the
+    # clock's resolution — a tiny fixture on a fast link really can.
+    rate = f"{num_bytes / elapsed / 1024 / 1024:.1f} MiB/s" if elapsed > 0 else "n/a"
+    return f"[{label}] done: {_human(num_bytes)} in {elapsed:.1f}s ({rate})"
 
 
 # --------------------------------------------------------------------------- #

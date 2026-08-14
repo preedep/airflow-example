@@ -139,6 +139,24 @@ class MyFTPSHook(FTPSHook):
         return self.conn
 
 
+def _human(num_bytes: int) -> str:
+    """Format a byte count for logs: 52428800 -> '50.0 MiB'."""
+    size = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _summary(label: str, num_bytes: int, elapsed: float) -> str:
+    """One-line transfer summary: size, wall time, and throughput."""
+    # Guard against a divide-by-zero on a transfer that completes inside the
+    # clock's resolution — a tiny fixture on a fast link really can.
+    rate = f"{num_bytes / elapsed / 1024 / 1024:.1f} MiB/s" if elapsed > 0 else "n/a"
+    return f"[{label}] done: {_human(num_bytes)} in {elapsed:.1f}s ({rate})"
+
+
 # --------------------------------------------------------------------------- #
 # Task callables
 # --------------------------------------------------------------------------- #
@@ -155,6 +173,7 @@ def stream_ftps_to_sftp(**context):
     # re-parsed on every dag-processor cycle and only this task needs them.
     import os
     import threading
+    import time
 
     task_log = logging.getLogger("airflow.task")
 
@@ -162,6 +181,7 @@ def stream_ftps_to_sftp(**context):
     src = f"{FTPS_DIR}/{filename}"
     dst = f"{SFTP_DIR}/{filename}"
 
+    started = time.monotonic()
     ftps_hook = MyFTPSHook(ftp_conn_id=FTPS_CONN_ID)
     sftp_hook = SFTPHook(ssh_conn_id=SFTP_CONN_ID)
 
@@ -233,7 +253,7 @@ def stream_ftps_to_sftp(**context):
     if sent != expected:
         raise ValueError(f"size mismatch for {filename}: read {sent}, expected {expected}")
 
-    task_log.info("[ftps_to_sftp] transferred %s bytes to %s", sent, dst)
+    task_log.info("%s -> %s", _summary("ftps_to_sftp", sent, time.monotonic() - started), dst)
     return {"source": src, "destination": dst, "size": sent}
 
 
