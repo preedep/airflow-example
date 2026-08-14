@@ -52,9 +52,15 @@ pull, as in the FTPS demo.
 
 #### Memory
 
-`putfo` reads in 32 KiB chunks by default and the downloader fetches on demand,
-so peak memory is a chunk rather than the file size — a multi-GB blob transfers
-in constant memory.
+`putfo` reads in **32 KiB** chunks and the downloader fetches on demand, so peak
+memory is one chunk rather than the file size — a multi-GB blob transfers in
+constant memory.
+
+That size is not configurable: paramiko hardcodes `reader.read(32768)` inside
+`_transfer_with_callback` and offers no parameter for it. The other transfer
+demos expose a `chunk_size` argument because their underlying calls
+(`retrbinary`, `storbinary`) take a `blocksize`; this one deliberately does not,
+rather than offering a knob that does nothing.
 
 `MAX_BYTES` caps a single transfer; a larger blob fails before any bytes move
 rather than running unbounded.
@@ -103,9 +109,13 @@ CONTAINER = "data001"
 # user; putfo will not create it.
 SFTP_DIR = "/home/airflowsftp/incoming"
 
-# Bytes per putfo read. Peak memory of the transfer, not the file size — the
-# downloader fetches on demand, so chunks do not accumulate.
-CHUNK_SIZE = 32768
+# Peak memory of the transfer is one chunk, not the file size — the downloader
+# fetches on demand, so chunks do not accumulate.
+#
+# There is deliberately no CHUNK_SIZE constant here, unlike the other transfer
+# demos: paramiko's putfo hardcodes `reader.read(32768)` in
+# `_transfer_with_callback` and exposes no parameter for it. An operator argument
+# would be a knob that silently does nothing.
 MAX_BYTES = 2 * 1024**3  # 2 GiB — fail rather than transfer unbounded
 
 
@@ -131,7 +141,6 @@ class BlobToSFTPStreamOperator(BaseOperator):
     :param remote_path: absolute destination path on the SFTP server. The parent
         directory must already exist.
     :param max_bytes: reject a blob larger than this before any bytes move.
-    :param chunk_size: bytes per `putfo` read.
     :param confirm: `stat` the file after writing and compare sizes, so a
         truncated write fails here rather than downstream.
     """
@@ -152,7 +161,6 @@ class BlobToSFTPStreamOperator(BaseOperator):
         blob_name: str,
         remote_path: str,
         max_bytes: int = MAX_BYTES,
-        chunk_size: int = CHUNK_SIZE,
         confirm: bool = True,
         **kwargs: Any,
     ) -> None:
@@ -163,7 +171,6 @@ class BlobToSFTPStreamOperator(BaseOperator):
         self.blob_name = blob_name
         self.remote_path = remote_path
         self.max_bytes = max_bytes
-        self.chunk_size = chunk_size
         self.confirm = confirm
 
     # cached_property, matching the provider convention: the hook is built on

@@ -50,6 +50,25 @@ descriptors buying nothing.
 `confirm=True` makes paramiko `stat` the file afterwards and compare sizes, so a
 short write raises inside the transfer task rather than surfacing downstream.
 
+## Chunk size is not configurable here
+
+The other transfer demos expose a `chunk_size` operator argument, because their
+underlying calls take one — `retrbinary(..., blocksize=)` and
+`storbinary(..., blocksize=)`. This one does not, and that asymmetry is
+deliberate: paramiko's `putfo` hardcodes the read size in
+`_transfer_with_callback`:
+
+```python
+def _transfer_with_callback(self, reader, writer, file_size, callback):
+    while True:
+        data = reader.read(32768)      # not a parameter
+        ...
+```
+
+So the transfer moves in **32 KiB** chunks and there is no way to change it short
+of reimplementing `putfo`. Offering a `chunk_size` argument would be a knob that
+silently does nothing — worse than not having one.
+
 One paramiko detail worth knowing if you turn that off: with `confirm=False`,
 `putfo` returns an **empty `SFTPAttributes` whose `st_size` is `None`**, not
 `None` itself. Code that compares `attrs.st_size` against the expected size will
