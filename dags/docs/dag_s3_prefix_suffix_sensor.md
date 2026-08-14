@@ -1,5 +1,7 @@
 # `dag_s3_prefix_suffix_sensor.py`
 
+📄 **[Source: `dag_s3_prefix_suffix_sensor.py`](../dag_s3_prefix_suffix_sensor.py)**
+
 `nix-dag-s3-prefix-suffix-sensor` — waits for an S3 object matching **both** a
 prefix and a suffix, then reports what it found.
 

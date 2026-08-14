@@ -1,5 +1,7 @@
 # `dag_cyclic.py`
 
+📄 **[Source: `dag_cyclic.py`](../dag_cyclic.py)**
+
 
 `nix-dag-cyclic` — a **cyclic job** in the Control-M sense: fires every 5 minutes,
 with only one run ever active. The task sleeps 4 minutes to stand in for real work.

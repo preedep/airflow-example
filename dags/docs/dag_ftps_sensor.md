@@ -1,5 +1,7 @@
 # `dag_ftps_sensor.py`
 
+📄 **[Source: `dag_ftps_sensor.py`](../dag_ftps_sensor.py)**
+
 
 `nix-dag-ftps-sensor` — waits for a file to appear, then reports its size and mtime.
 

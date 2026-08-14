@@ -1,5 +1,7 @@
 # `dag_wasb_prefix_suffix_sensor.py`
 
+📄 **[Source: `dag_wasb_prefix_suffix_sensor.py`](../dag_wasb_prefix_suffix_sensor.py)**
+
 
 `nix-dag-wasb-prefix-suffix-sensor` — waits for an Azure blob matching **both** a
 prefix and a suffix.

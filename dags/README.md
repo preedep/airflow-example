@@ -51,17 +51,18 @@ The DAGs build on each other. Run top to bottom the first time.
 
 | # | DAG | Demonstrates | Depends on |
 |---|---|---|---|
-| 1 | `dag_ftps_simple_transfer.py` | provider operator, file upload | — |
-| 2 | `dag_ftps_sensor.py` | sensor in reschedule mode | a file uploaded by #1 |
-| 3 | `dag_ftps_to_sftp_stream_transfer.py` | streaming between two servers | a file uploaded by #1 |
-| 4 | `dag_sftp_to_blob_stream.py` | streaming into object storage | a file in the SFTP source directory |
-| 5 | `dag_ftps_to_blob_stream.py` | bridging a push API to a pull API | a file uploaded by #1 |
-| 6 | `dag_blob_to_sftp_stream.py` | streaming back out of object storage | a blob in the container (#4 or #5 writes one) |
-| 7 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container |
-| 8 | `dag_blob_to_ftps_stream.py` | same protocol, opposite control flow | a blob in the container (#4 or #5 writes one) |
-| 9 | `dag_s3_prefix_suffix_sensor.py` | the same sensor pattern on S3 | an object in the S3 bucket |
-| 10 | `dag_blob_to_s3_stream.py` | cross-cloud streaming, Azure to AWS | a blob in the container (#4 or #5 writes one) |
-| 11 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
+| 1 | [`dag_ftps_simple_transfer.py`](dag_ftps_simple_transfer.py) | provider operator, file upload | — |
+| 2 | [`dag_ftps_sensor.py`](dag_ftps_sensor.py) | sensor in reschedule mode | a file uploaded by #1 |
+| 3 | [`dag_ftps_to_sftp_stream_transfer.py`](dag_ftps_to_sftp_stream_transfer.py) | streaming between two servers | a file uploaded by #1 |
+| 4 | [`dag_sftp_to_blob_stream.py`](dag_sftp_to_blob_stream.py) | streaming into object storage | a file in the SFTP source directory |
+| 5 | [`dag_ftps_to_blob_stream.py`](dag_ftps_to_blob_stream.py) | bridging a push API to a pull API | a file uploaded by #1 |
+| 6 | [`dag_blob_to_sftp_stream.py`](dag_blob_to_sftp_stream.py) | streaming back out of object storage | a blob in the container (#4 or #5 writes one) |
+| 7 | [`dag_wasb_prefix_suffix_sensor.py`](dag_wasb_prefix_suffix_sensor.py) | extending a provider sensor | a blob in the container |
+| 8 | [`dag_blob_to_ftps_stream.py`](dag_blob_to_ftps_stream.py) | same protocol, opposite control flow | a blob in the container (#4 or #5 writes one) |
+| 9 | [`dag_s3_prefix_suffix_sensor.py`](dag_s3_prefix_suffix_sensor.py) | the same sensor pattern on S3 | an object in the S3 bucket |
+| 10 | [`dag_blob_to_s3_stream.py`](dag_blob_to_s3_stream.py) | cross-cloud streaming, Azure to AWS | a blob in the container (#4 or #5 writes one) |
+| 11 | [`dag_s3_to_blob_stream.py`](dag_s3_to_blob_stream.py) | cross-cloud the other way, via a provider operator | an object in the S3 bucket (#10 writes one) |
+| 12 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -81,7 +82,7 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#11 needs no connection at all** and is the only scheduled DAG here; the rest are
+**#12 needs no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -102,6 +103,7 @@ module. Use this table to find a worked example of the pattern you need.
 | `BlobToSFTPStreamOperator` | [#6](docs/dag_blob_to_sftp_stream.md) | `BaseOperator` | No provider Blob → SFTP transfer exists |
 | `BlobToFTPSStreamOperator` | [#8](docs/dag_blob_to_ftps_stream.md) | `BaseOperator` | No provider Blob → FTPS transfer exists |
 | `BlobToS3StreamOperator` | [#10](docs/dag_blob_to_s3_stream.md) | `BaseOperator` | No provider Blob → S3 transfer exists; `s3_to_wasb` points the other way |
+| `StreamingS3ToAzureBlobStorageOperator` | [#11](docs/dag_s3_to_blob_stream.md) | `S3ToAzureBlobStorageOperator` | Override one method so objects stream instead of staging on disk |
 | `S3PrefixSuffixSensor` | [#9](docs/dag_s3_prefix_suffix_sensor.md) | `S3KeySensor` | Collect every match and push it to XCom; the stock sensor pushes nothing |
 
 They fall into three tiers, and the right one is always the **lowest** that works:
@@ -133,8 +135,8 @@ them in one place at the top of each file if yours differ.
 |---|---|---|
 | `ftps_test_001` | **`FTP`** | host, login, password, port `21` |
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
-| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7, #8, #10) |
-| `aws_s3_test_001` | `aws` | login = access key id, password = secret; `{"region_name": "..."}` in extra (#9, #10) |
+| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7, #8, #10, #11) |
+| `aws_s3_test_001` | `aws` | login = access key id, password = secret; `{"region_name": "..."}` in extra (#9, #10, #11) |
 
 For SAS auth, put the token in the connection's **extra** as
 `{"sas_token": "?sp=...&sig=..."}` and set **login to the storage account name** —
@@ -167,7 +169,7 @@ laptop (VPN, `/etc/hosts`, mesh network) often does not resolve inside the clust
 apache-airflow-providers-ftp                 # for #1, #2, #3, #5, #8
 apache-airflow-providers-sftp                # for #3, #4, #6
 apache-airflow-providers-microsoft-azure     # for #4, #5, #6, #7, #8
-apache-airflow-providers-amazon              # for #9, #10
+apache-airflow-providers-amazon              # for #9, #10, #11
 ```
 
 Both must be in the **Airflow image**, not just your local venv — they cannot be
@@ -196,121 +198,132 @@ that #4's default source is the SFTP user's `outgoing/`, while #3 *delivers* int
 
 ---
 
-## 1. `dag_ftps_simple_transfer.py`
+## 1. [`dag_ftps_simple_transfer.py`](dag_ftps_simple_transfer.py)
 
 `nix-dag-ftps-simple-transfer` — uploads a file from the DAG folder to FTPS.
 
 **Teaches:** Prefer a provider operator over `PythonOperator`; subclass it to swap in a custom hook.
 
-→ **[Full detail: `docs/dag_ftps_simple_transfer.md`](docs/dag_ftps_simple_transfer.md)**
+→ **[Full detail: `docs/dag_ftps_simple_transfer.md`](docs/dag_ftps_simple_transfer.md)**  ·  📄 **[Source: `dag_ftps_simple_transfer.py`](dag_ftps_simple_transfer.py)**
 
 ---
 
-## 2. `dag_ftps_sensor.py`
+## 2. [`dag_ftps_sensor.py`](dag_ftps_sensor.py)
 
 `nix-dag-ftps-sensor` — waits for a file to appear, then reports its size and mtime.
 
 **Teaches:** Always `mode="reschedule"` with an explicit `poke_interval` and `timeout`.
 
-→ **[Full detail: `docs/dag_ftps_sensor.md`](docs/dag_ftps_sensor.md)**
+→ **[Full detail: `docs/dag_ftps_sensor.md`](docs/dag_ftps_sensor.md)**  ·  📄 **[Source: `dag_ftps_sensor.py`](dag_ftps_sensor.py)**
 
 ---
 
-## 3. `dag_ftps_to_sftp_stream_transfer.py`
+## 3. [`dag_ftps_to_sftp_stream_transfer.py`](dag_ftps_to_sftp_stream_transfer.py)
 
 `nix-dag-ftps-to-sftp-stream` — streams a file between two servers.
 
 **Teaches:** Get and put are one task, not two — separate tasks land in separate pods.
 
-→ **[Full detail: `docs/dag_ftps_to_sftp_stream_transfer.md`](docs/dag_ftps_to_sftp_stream_transfer.md)**
+→ **[Full detail: `docs/dag_ftps_to_sftp_stream_transfer.md`](docs/dag_ftps_to_sftp_stream_transfer.md)**  ·  📄 **[Source: `dag_ftps_to_sftp_stream_transfer.py`](dag_ftps_to_sftp_stream_transfer.py)**
 
 ---
 
-## 4. `dag_sftp_to_blob_stream.py`
+## 4. [`dag_sftp_to_blob_stream.py`](dag_sftp_to_blob_stream.py)
 
 `nix-dag-sftp-to-blob-stream` — streams a file from SFTP into a blob container.
 
 **Teaches:** Override the one provider method that is wrong, inherit the rest. Three runtime traps a parse check cannot catch.
 
-→ **[Full detail: `docs/dag_sftp_to_blob_stream.md`](docs/dag_sftp_to_blob_stream.md)**
+→ **[Full detail: `docs/dag_sftp_to_blob_stream.md`](docs/dag_sftp_to_blob_stream.md)**  ·  📄 **[Source: `dag_sftp_to_blob_stream.py`](dag_sftp_to_blob_stream.py)**
 
 ---
 
-## 5. `dag_ftps_to_blob_stream.py`
+## 5. [`dag_ftps_to_blob_stream.py`](dag_ftps_to_blob_stream.py)
 
 `nix-dag-ftps-to-blob-stream` — streams a file from FTPS into a blob container.
 
 **Teaches:** When no provider operator exists, write one. Bridging a **push** API to a **pull** API with `os.pipe()`.
 
-→ **[Full detail: `docs/dag_ftps_to_blob_stream.md`](docs/dag_ftps_to_blob_stream.md)**
+→ **[Full detail: `docs/dag_ftps_to_blob_stream.md`](docs/dag_ftps_to_blob_stream.md)**  ·  📄 **[Source: `dag_ftps_to_blob_stream.py`](dag_ftps_to_blob_stream.py)**
 
 ---
 
-## 6. `dag_blob_to_sftp_stream.py`
+## 6. [`dag_blob_to_sftp_stream.py`](dag_blob_to_sftp_stream.py)
 
 `nix-dag-blob-to-sftp-stream` — streams a blob back out to the SFTP server.
 
 **Teaches:** Two readables compose directly — no pipe needed. Reach for one only when both sides push or both pull.
 
-→ **[Full detail: `docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md)**
+→ **[Full detail: `docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md)**  ·  📄 **[Source: `dag_blob_to_sftp_stream.py`](dag_blob_to_sftp_stream.py)**
 
 ---
 
-## 7. `dag_wasb_prefix_suffix_sensor.py`
+## 7. [`dag_wasb_prefix_suffix_sensor.py`](dag_wasb_prefix_suffix_sensor.py)
 
 `nix-dag-wasb-prefix-suffix-sensor` — waits for a blob matching a prefix **and** suffix.
 
 **Teaches:** Extend a provider sensor rather than writing one; push the filter server-side.
 
-→ **[Full detail: `docs/dag_wasb_prefix_suffix_sensor.md`](docs/dag_wasb_prefix_suffix_sensor.md)**
+→ **[Full detail: `docs/dag_wasb_prefix_suffix_sensor.md`](docs/dag_wasb_prefix_suffix_sensor.md)**  ·  📄 **[Source: `dag_wasb_prefix_suffix_sensor.py`](dag_wasb_prefix_suffix_sensor.py)**
 
 ---
 
-## 8. `dag_blob_to_ftps_stream.py`
+## 8. [`dag_blob_to_ftps_stream.py`](dag_blob_to_ftps_stream.py)
 
 `nix-dag-blob-to-ftps-stream` — streams a blob out to the FTPS server.
 
 **Teaches:** Control flow is a property of the *call*, not the protocol — same server as #5, no pipe required.
 
-→ **[Full detail: `docs/dag_blob_to_ftps_stream.md`](docs/dag_blob_to_ftps_stream.md)**
+→ **[Full detail: `docs/dag_blob_to_ftps_stream.md`](docs/dag_blob_to_ftps_stream.md)**  ·  📄 **[Source: `dag_blob_to_ftps_stream.py`](dag_blob_to_ftps_stream.py)**
 
 ---
 
-## 9. `dag_s3_prefix_suffix_sensor.py`
+## 9. [`dag_s3_prefix_suffix_sensor.py`](dag_s3_prefix_suffix_sensor.py)
 
 `nix-dag-s3-prefix-suffix-sensor` — waits for an S3 object matching a prefix **and** suffix.
 
 **Teaches:** subclass to fix the *hand-off*, not the matching — `S3KeySensor` already
 does wildcards, but tells you nothing about what it matched.
 
-→ **[Full detail: `docs/dag_s3_prefix_suffix_sensor.md`](docs/dag_s3_prefix_suffix_sensor.md)**
+→ **[Full detail: `docs/dag_s3_prefix_suffix_sensor.md`](docs/dag_s3_prefix_suffix_sensor.md)**  ·  📄 **[Source: `dag_s3_prefix_suffix_sensor.py`](dag_s3_prefix_suffix_sensor.py)**
 
 ---
 
-## 10. `dag_blob_to_s3_stream.py`
+## 10. [`dag_blob_to_s3_stream.py`](dag_blob_to_s3_stream.py)
 
 `nix-dag-blob-to-s3-stream` — streams a blob from Azure Blob Storage to Amazon S3.
 
 **Teaches:** the only cross-cloud hop here — two vendors' SDKs, no pipe, and why
 boto3 tolerates a non-seekable source where the Azure SDK does not.
 
-→ **[Full detail: `docs/dag_blob_to_s3_stream.md`](docs/dag_blob_to_s3_stream.md)**
+→ **[Full detail: `docs/dag_blob_to_s3_stream.md`](docs/dag_blob_to_s3_stream.md)**  ·  📄 **[Source: `dag_blob_to_s3_stream.py`](dag_blob_to_s3_stream.py)**
 
 ---
 
-## 11. `dag_cyclic.py`
+## 11. [`dag_s3_to_blob_stream.py`](dag_s3_to_blob_stream.py)
+
+`nix-dag-s3-to-blob-stream` — streams an object from Amazon S3 to Azure Blob Storage.
+
+**Teaches:** the one cross-service direction a provider already covers — override
+`move_file` and inherit the rest. Also why `hasattr(body, "seek")` lies.
+
+→ **[Full detail: `docs/dag_s3_to_blob_stream.md`](docs/dag_s3_to_blob_stream.md)**  ·  📄 **[Source: `dag_s3_to_blob_stream.py`](dag_s3_to_blob_stream.py)**
+
+---
+
+## 12. [`dag_cyclic.py`](dag_cyclic.py)
 
 `nix-dag-cyclic` — a cyclic job: fires every 5 minutes, one run at a time.
 
 **Teaches:** `max_active_runs=1` is what makes a schedule cyclic; a timeout arrives as a failure, not a callback.
 
-→ **[Full detail: `docs/dag_cyclic.md`](docs/dag_cyclic.md)**
+→ **[Full detail: `docs/dag_cyclic.md`](docs/dag_cyclic.md)**  ·  📄 **[Source: `dag_cyclic.py`](dag_cyclic.py)**
 
 ---
 
 ## Running them
 
-All except #11 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
+All except #12 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
 the CLI:
 
 ```bash
@@ -333,7 +346,8 @@ the default fixture on the left and a larger file on the right.
 | 8 | `airflow dags trigger nix-dag-blob-to-ftps-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'` |
 | 9 | `airflow dags trigger nix-dag-s3-prefix-suffix-sensor --conf '{"prefix":"probe/","suffix":".txt"}'` |
 | 10 | `airflow dags trigger nix-dag-blob-to-s3-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/","s3_prefix":"incoming/"}'` |
-| 11 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
+| 11 | `airflow dags trigger nix-dag-s3-to-blob-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/","blob_prefix":"xcloud"}'` |
+| 12 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
 
 ### Testing with a large file
 
