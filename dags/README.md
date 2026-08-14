@@ -62,7 +62,8 @@ The DAGs build on each other. Run top to bottom the first time.
 | 9 | [`dag_s3_prefix_suffix_sensor.py`](dag_s3_prefix_suffix_sensor.py) | the same sensor pattern on S3 | an object in the S3 bucket |
 | 10 | [`dag_blob_to_s3_stream.py`](dag_blob_to_s3_stream.py) | cross-cloud streaming, Azure to AWS | a blob in the container (#4 or #5 writes one) |
 | 11 | [`dag_s3_to_blob_stream.py`](dag_s3_to_blob_stream.py) | cross-cloud the other way, via a provider operator | an object in the S3 bucket (#10 writes one) |
-| 12 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
+| 12 | [`dag_blob_to_smb_stream.py`](dag_blob_to_smb_stream.py) | a destination that is *writable*, not readable | a blob in the container (#4 or #5 writes one) |
+| 13 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -82,7 +83,7 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#12 needs no connection at all** and is the only scheduled DAG here; the rest are
+**#13 needs no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -104,6 +105,7 @@ module. Use this table to find a worked example of the pattern you need.
 | `BlobToFTPSStreamOperator` | [#8](docs/dag_blob_to_ftps_stream.md) | `BaseOperator` | No provider Blob → FTPS transfer exists |
 | `BlobToS3StreamOperator` | [#10](docs/dag_blob_to_s3_stream.md) | `BaseOperator` | No provider Blob → S3 transfer exists; `s3_to_wasb` points the other way |
 | `StreamingS3ToAzureBlobStorageOperator` | [#11](docs/dag_s3_to_blob_stream.md) | `S3ToAzureBlobStorageOperator` | Override one method so objects stream instead of staging on disk |
+| `BlobToSMBStreamOperator` | [#12](docs/dag_blob_to_smb_stream.md) | `BaseOperator` | No provider Blob → SMB transfer exists |
 | `S3PrefixSuffixSensor` | [#9](docs/dag_s3_prefix_suffix_sensor.md) | `S3KeySensor` | Collect every match and push it to XCom; the stock sensor pushes nothing |
 
 They fall into three tiers, and the right one is always the **lowest** that works:
@@ -135,7 +137,8 @@ them in one place at the top of each file if yours differ.
 |---|---|---|
 | `ftps_test_001` | **`FTP`** | host, login, password, port `21` |
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
-| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7, #8, #10, #11) |
+| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7, #8, #10, #11, #12) |
+| `smb_test_001` | `samba` | host, **schema = share name**, login, password (#12) |
 | `aws_s3_test_001` | `aws` | login = access key id, password = secret; `{"region_name": "..."}` in extra (#9, #10, #11) |
 
 For SAS auth, put the token in the connection's **extra** as
@@ -170,6 +173,7 @@ apache-airflow-providers-ftp                 # for #1, #2, #3, #5, #8
 apache-airflow-providers-sftp                # for #3, #4, #6
 apache-airflow-providers-microsoft-azure     # for #4, #5, #6, #7, #8
 apache-airflow-providers-amazon              # for #9, #10, #11
+apache-airflow-providers-samba               # for #12
 ```
 
 Both must be in the **Airflow image**, not just your local venv — they cannot be
@@ -311,7 +315,19 @@ boto3 tolerates a non-seekable source where the Azure SDK does not.
 
 ---
 
-## 12. [`dag_cyclic.py`](dag_cyclic.py)
+## 12. [`dag_blob_to_smb_stream.py`](dag_blob_to_smb_stream.py)
+
+`nix-dag-blob-to-smb-stream` — streams a blob from Azure Blob Storage to an SMB share.
+
+**Teaches:** what to do when the destination is a *writable* rather than a
+readable — the source pushes with `readinto`, and still no pipe. Also why Samba
+refuses SMB's atomic overwrite-rename.
+
+→ **[Full detail: `docs/dag_blob_to_smb_stream.md`](docs/dag_blob_to_smb_stream.md)**  ·  📄 **[Source: `dag_blob_to_smb_stream.py`](dag_blob_to_smb_stream.py)**
+
+---
+
+## 13. [`dag_cyclic.py`](dag_cyclic.py)
 
 `nix-dag-cyclic` — a cyclic job: fires every 5 minutes, one run at a time.
 
@@ -323,7 +339,7 @@ boto3 tolerates a non-seekable source where the Azure SDK does not.
 
 ## Running them
 
-All except #12 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
+All except #13 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
 the CLI:
 
 ```bash
@@ -347,7 +363,8 @@ the default fixture on the left and a larger file on the right.
 | 9 | `airflow dags trigger nix-dag-s3-prefix-suffix-sensor --conf '{"prefix":"probe/","suffix":".txt"}'` |
 | 10 | `airflow dags trigger nix-dag-blob-to-s3-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/","s3_prefix":"incoming/"}'` |
 | 11 | `airflow dags trigger nix-dag-s3-to-blob-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/","blob_prefix":"xcloud"}'` |
-| 12 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
+| 12 | `airflow dags trigger nix-dag-blob-to-smb-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'` |
+| 13 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
 
 ### Testing with a large file
 
@@ -405,8 +422,8 @@ constant-memory behaviour there. Every other DAG streams at any size.
 
 ## Write-then-rename, and where it does not apply
 
-The three DAGs with an **SFTP or FTPS destination** (#3, #6, #8) write to
-`<name>.part` and rename once the last byte lands. A consumer polling the drop
+The DAGs with a **filesystem-like destination** — SFTP, FTPS or SMB (#3, #6, #8,
+#12) — write to `<name>.part` and rename once the last byte lands. A consumer polling the drop
 directory therefore never sees a partial file, and a failed run leaves an obvious
 `.part` rather than a truncated file indistinguishable from a good one.
 
@@ -415,12 +432,13 @@ The rename is a metadata operation, so no data is re-transferred. Pass
 
 The object-store DAGs (#4, #5, #9, #10, #11) deliberately **do not** do this:
 
-| Destination | Rename | Cost |
-|---|---|---|
-| SFTP | `posix_rename()` | free, atomic |
-| FTPS | `rename()` (RNFR/RNTO) | free, atomic |
-| Azure Blob | none — only `start_copy_from_url` | full server-side copy |
-| S3 | none — `copy_object` + delete | full server-side copy |
+| Destination | Rename | Cost | Atomic? |
+|---|---|---|---|
+| SFTP | `posix_rename()` | free | yes |
+| FTPS | `rename()` (RNFR/RNTO) | free | yes, where supported |
+| SMB via Samba | unlink + `rename()` | free | **no** — brief gap |
+| Azure Blob | none — only `start_copy_from_url` | full server-side copy | — |
+| S3 | none — `copy_object` + delete | full server-side copy | — |
 
 Object stores have no rename, so the equivalent would double the data written and
 the bill — and they do not expose a partially-uploaded object in the first place,
@@ -436,6 +454,13 @@ OSError: Failure
 which breaks a retry over a previous run's file. `posix_rename` overwrites
 atomically. FTPS `rename` overwrote on the server tested here, but that is
 server-dependent — a stricter server may need the target deleted first.
+
+**SMB is the awkward one.** It has an atomic overwrite-rename
+(`FILE_RENAME_INFORMATION` with `ReplaceIfExists`, issued by
+`smbclient.replace`), but Samba refuses it with `STATUS_ACCESS_DENIED` even
+between two files the account just created and can delete outright — so #12
+unlinks the target first and then renames, giving up atomicity to keep the
+pattern. See [its page](docs/dag_blob_to_smb_stream.md).
 
 ---
 

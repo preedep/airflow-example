@@ -148,14 +148,15 @@ schedule_interval="@daily"                                             # ❌ rem
 
 ### Available packages
 
-Verified on the server image 2026-08-12 (`pip list` in the webserver pod) — this is
-broader than `g1pro.md` §8 claims:
+Verified on the server image 2026-08-14 by `pip list` in the webserver pod — the
+authoritative check, and broader than `g1pro.md` §8 claims:
 
-`standard` · `cncf-kubernetes` · `postgres` · `mysql` · `common-sql` · `common-io` ·
-`common-compat` · `common-messaging` · `http` · `smtp` · `ssh` · `sftp` · `ftp` ·
-`amazon` · `google` · `microsoft-azure` · `microsoft-psrp` · `databricks` ·
-`snowflake` · `elasticsearch` · `redis` · `celery` · `docker` · `git` · `grpc` ·
-`hashicorp` · `odbc` · `openlineage` · `slack` · `fab`
+`amazon` · `celery` · `cncf-kubernetes` · `common-compat` · `common-io` ·
+`common-messaging` · `common-sql` · `databricks` · `docker` · `elasticsearch` ·
+`fab` · `ftp` · `git` · `google` · `grpc` · `hashicorp` · `http` ·
+`microsoft-azure` · `microsoft-psrp` · `mysql` · `odbc` · `openlineage` ·
+`postgres` · `redis` · `samba` · `sendgrid` · `sftp` · `slack` · `smtp` ·
+`snowflake` · `ssh` · `standard`
 
 Plus `requests` 2.33.1 and `pendulum` 3.2.0.
 
