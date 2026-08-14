@@ -53,7 +53,8 @@ The DAGs build on each other. Run top to bottom the first time.
 | 6 | `dag_blob_to_sftp_stream.py` | streaming back out of object storage | a blob in the container (#4 or #5 writes one) |
 | 7 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container |
 | 8 | `dag_blob_to_ftps_stream.py` | same protocol, opposite control flow | a blob in the container (#4 or #5 writes one) |
-| 9 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
+| 9 | `dag_s3_prefix_suffix_sensor.py` | the same sensor pattern on S3 | an object in the S3 bucket |
+| 10 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -73,7 +74,7 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#9 needs no connection at all** and is the only scheduled DAG here; the rest are
+**#10 needs no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -93,6 +94,7 @@ module. Use this table to find a worked example of the pattern you need.
 | `FTPStoBlobStreamOperator` | [#5](docs/dag_ftps_to_blob_stream.md) | `BaseOperator` | No provider FTPS → Blob transfer exists |
 | `BlobToSFTPStreamOperator` | [#6](docs/dag_blob_to_sftp_stream.md) | `BaseOperator` | No provider Blob → SFTP transfer exists |
 | `BlobToFTPSStreamOperator` | [#8](docs/dag_blob_to_ftps_stream.md) | `BaseOperator` | No provider Blob → FTPS transfer exists |
+| `S3PrefixSuffixSensor` | [#9](docs/dag_s3_prefix_suffix_sensor.md) | `S3KeySensor` | Collect every match and push it to XCom; the stock sensor pushes nothing |
 
 They fall into three tiers, and the right one is always the **lowest** that works:
 
@@ -124,6 +126,7 @@ them in one place at the top of each file if yours differ.
 | `ftps_test_001` | **`FTP`** | host, login, password, port `21` |
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
 | `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7, #8) |
+| `aws_s3_test_001` | `aws` | login = access key id, password = secret; `{"region_name": "..."}` in extra (#9) |
 
 For SAS auth, put the token in the connection's **extra** as
 `{"sas_token": "?sp=...&sig=..."}` and set **login to the storage account name** —
@@ -156,6 +159,7 @@ laptop (VPN, `/etc/hosts`, mesh network) often does not resolve inside the clust
 apache-airflow-providers-ftp                 # for #1, #2, #3, #5, #8
 apache-airflow-providers-sftp                # for #3, #4, #6
 apache-airflow-providers-microsoft-azure     # for #4, #5, #6, #7, #8
+apache-airflow-providers-amazon              # for #9
 ```
 
 Both must be in the **Airflow image**, not just your local venv — they cannot be
@@ -264,7 +268,18 @@ that #4's default source is the SFTP user's `outgoing/`, while #3 *delivers* int
 
 ---
 
-## 9. `dag_cyclic.py`
+## 9. `dag_s3_prefix_suffix_sensor.py`
+
+`nix-dag-s3-prefix-suffix-sensor` — waits for an S3 object matching a prefix **and** suffix.
+
+**Teaches:** subclass to fix the *hand-off*, not the matching — `S3KeySensor` already
+does wildcards, but tells you nothing about what it matched.
+
+→ **[Full detail: `docs/dag_s3_prefix_suffix_sensor.md`](docs/dag_s3_prefix_suffix_sensor.md)**
+
+---
+
+## 10. `dag_cyclic.py`
 
 `nix-dag-cyclic` — a cyclic job: fires every 5 minutes, one run at a time.
 
