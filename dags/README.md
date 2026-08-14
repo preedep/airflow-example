@@ -5,9 +5,9 @@ FTPS server, waiting on a file with a sensor, streaming between two servers, and
 streaming into Azure Blob Storage.
 
 They also work through a progression in **how much of a provider you reuse** —
-using an operator as shipped (#1), extending a sensor (#6), overriding one method
+using an operator as shipped (#1), extending a sensor (#7), overriding one method
 of a transfer operator (#4), and writing an operator from scratch when the
-provider has nothing (#5).
+provider has nothing (#5, #6).
 
 Each DAG is a **standalone single file** — no shared helper module, no subfolders,
 no cross-DAG imports. Copy one out of this repo and it still works. That is why
@@ -31,25 +31,28 @@ The DAGs build on each other. Run top to bottom the first time.
 | 3 | `dag_ftps_to_sftp_stream_transfer.py` | streaming between two servers | a file uploaded by #1 |
 | 4 | `dag_sftp_to_blob_stream.py` | streaming into object storage | a file in the SFTP source directory |
 | 5 | `dag_ftps_to_blob_stream.py` | bridging a push API to a pull API | a file uploaded by #1 |
-| 6 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container (#4 or #5 writes one) |
-| 7 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
+| 6 | `dag_blob_to_sftp_stream.py` | streaming back out of object storage | a blob in the container (#4 or #5 writes one) |
+| 7 | `dag_wasb_prefix_suffix_sensor.py` | extending a provider sensor | a blob in the container |
+| 8 | `dag_cyclic.py` | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
 timeout and the stream transfer fails with "not found".
 
-**#4/#5 → #6 chain**: #4 and #5 both write a blob into the container, and #6 finds
-it there. #4 needs a file in its SFTP source directory first — see
+**#4/#5 → #6/#7 chain**: #4 and #5 both write a blob into the container; #6
+streams one back out to SFTP and #7 finds it there. #4 needs a file in its SFTP source directory first — see
 [SFTP source directory](#sftp-source-directory-4); #3 delivers into the SFTP
 user's `incoming/`, so pointing #4 at that path chains all three. #5 reads from
 the FTPS server, so it only needs #1 to have run.
 
-**#4 and #5 are the same problem with different plumbing** — read them together.
-The source API decides the design: SFTP hands back a readable object, so the
-destination pulls straight from it; FTPS pushes to a callback, so a pipe has to
-sit in between. See [Push versus pull](#push-versus-pull-why-5-needs-a-pipe).
+**#4, #5 and #6 are the same problem with different plumbing** — read them
+together. Which side controls the loop decides the design: a source that hands
+back a readable composes straight into a destination that pulls (#4, #6), while a
+source that pushes to a callback needs a pipe in between (#5). See
+[The pipe is not always needed](#the-pipe-is-not-always-needed-read-4-5-and-6-together)
+below.
 
-**#7 needs no connection at all** and is the only scheduled DAG here; the rest are
+**#8 needs no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -65,7 +68,7 @@ them in one place at the top of each file if yours differ.
 |---|---|---|
 | `ftps_test_001` | **`FTP`** | host, login, password, port `21` |
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
-| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6) |
+| `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7) |
 
 For SAS auth, put the token in the connection's **extra** as
 `{"sas_token": "?sp=...&sig=..."}` and set **login to the storage account name** —
@@ -96,8 +99,8 @@ laptop (VPN, `/etc/hosts`, mesh network) often does not resolve inside the clust
 
 ```
 apache-airflow-providers-ftp                 # for #1, #2, #3, #5
-apache-airflow-providers-sftp                # for #3, #4
-apache-airflow-providers-microsoft-azure     # for #4, #5, #6
+apache-airflow-providers-sftp                # for #3, #4, #6
+apache-airflow-providers-microsoft-azure     # for #4, #5, #6, #7
 ```
 
 Both must be in the **Airflow image**, not just your local venv — they cannot be
@@ -446,7 +449,66 @@ files, up-to-64-MiB-buffered for small ones.
 
 ---
 
-## 6. `dag_wasb_prefix_suffix_sensor.py`
+## 6. `dag_blob_to_sftp_stream.py`
+
+`nix-dag-blob-to-sftp-stream` — streams a blob back out of Azure Blob Storage to
+the SFTP server.
+
+```
+Blob container  ──download──▶  stream  ──putfo──▶  SFTP
+```
+
+```bash
+airflow dags trigger nix-dag-blob-to-sftp-stream \
+  --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'
+```
+
+Needs a blob in the container, so run #4 or #5 first. A successful run logs:
+
+```
+[blob_to_sftp] streaming wasb://data001/incoming/probe.txt -> .../incoming/probe.txt (118 bytes)
+[blob_to_sftp] transferred 118 bytes to .../incoming/probe.txt
+[blob_to_sftp] verified .../incoming/probe.txt — 118 bytes
+```
+
+### The pipe is not always needed — read #4, #5 and #6 together
+
+These three demos differ only in **which side controls the loop**, and that alone
+decides whether you need a pipe:
+
+| Direction | source | destination | bridge |
+|---|---|---|---|
+| #4 SFTP → Blob | `open()` returns a readable | `upload()` **pulls** | none |
+| #5 FTPS → Blob | `retrbinary()` **pushes** | `upload()` **pulls** | `os.pipe()` + thread |
+| #6 Blob → SFTP | `download()` returns a readable | `putfo()` **pulls** | none |
+
+`WasbHook.download()` returns a `StorageStreamDownloader`, whose `read(size)`
+returns bytes and an empty result at EOF — the readable contract paramiko's
+`putfo` expects. A reader on one side and a puller on the other compose directly:
+
+```python
+downloader = self.wasb_hook.download(container_name=..., blob_name=...)
+with self.sftp_hook.get_managed_conn() as sftp_client:
+    attrs = sftp_client.putfo(downloader, remote_path,
+                              file_size=expected, confirm=True)
+```
+
+**Reach for a pipe only when both sides push, or both pull** — that is #5 and
+nothing else here. Adding one to #6 would be a thread and a pair of file
+descriptors buying nothing.
+
+`confirm=True` makes paramiko `stat` the file afterwards and compare sizes, so a
+short write raises inside the transfer task rather than surfacing downstream.
+
+One paramiko detail worth knowing if you turn that off: with `confirm=False`,
+`putfo` returns an **empty `SFTPAttributes` whose `st_size` is `None`**, not
+`None` itself. Code that compares `attrs.st_size` against the expected size will
+report a bogus "wrote None" mismatch unless it treats that case as "nothing to
+compare".
+
+---
+
+## 7. `dag_wasb_prefix_suffix_sensor.py`
 
 `nix-dag-wasb-prefix-suffix-sensor` — waits for an Azure blob matching **both** a
 prefix and a suffix.
@@ -484,7 +546,7 @@ different set.
 
 ---
 
-## 7. `dag_cyclic.py`
+## 8. `dag_cyclic.py`
 
 `nix-dag-cyclic` — a **cyclic job** in the Control-M sense: fires every 5 minutes,
 with only one run ever active. The task sleeps 4 minutes to stand in for real work.
@@ -709,6 +771,8 @@ them.
 | `FileNotFoundError` from `listdir_attr`, file exists | #4 `source_path` is a bare filename — needs a directory or `*` |
 | `OSError: Socket is closed` mid-transfer | used `get_conn()` after a hook method closed the managed session |
 | `Session.request() got an unexpected keyword argument` | passed a client-config kwarg (e.g. `max_block_size`) to `upload()` |
+| `No such file` writing over SFTP | destination directory does not exist — `putfo` will not create it |
+| size mismatch reporting `wrote None` | `putfo(confirm=False)` returns empty `SFTPAttributes`; nothing to compare |
 | DAG missing from UI, no import error | processor has not parsed it yet |
 | DAG present but never runs | still paused |
 | Works locally, fails on the server | provider missing from the server image, or a connection/variable not set |
