@@ -64,7 +64,9 @@ The DAGs build on each other. Run top to bottom the first time.
 | 11 | [`dag_s3_to_blob_stream.py`](dag_s3_to_blob_stream.py) | cross-cloud the other way, via a provider operator | an object in the S3 bucket (#10 writes one) |
 | 12 | [`dag_blob_to_smb_stream.py`](dag_blob_to_smb_stream.py) | a destination that is *writable*, not readable | a blob in the container (#4 or #5 writes one) |
 | 13 | [`dag_s3_to_smb_stream.py`](dag_s3_to_smb_stream.py) | one call, because both SDKs already fit | an object in the S3 bucket (#10 writes one) |
-| 14 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
+| 14 | [`dag_s3_to_sftp_stream.py`](dag_s3_to_sftp_stream.py) | a third provider operator that stages to disk | an object in the S3 bucket (#10 writes one) |
+| 15 | [`dag_s3_to_ftps_stream.py`](dag_s3_to_ftps_stream.py) | two overrides, not one — logic *and* hook | an object in the S3 bucket (#10 writes one) |
+| 16 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -84,7 +86,7 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#14 needs no connection at all** and is the only scheduled DAG here; the rest are
+**#16 needs no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -108,6 +110,8 @@ module. Use this table to find a worked example of the pattern you need.
 | `StreamingS3ToAzureBlobStorageOperator` | [#11](docs/dag_s3_to_blob_stream.md) | `S3ToAzureBlobStorageOperator` | Override one method so objects stream instead of staging on disk |
 | `BlobToSMBStreamOperator` | [#12](docs/dag_blob_to_smb_stream.md) | `BaseOperator` | No provider Blob → SMB transfer exists |
 | `S3ToSMBStreamOperator` | [#13](docs/dag_s3_to_smb_stream.md) | `BaseOperator` | No provider S3 → SMB transfer exists |
+| `StreamingS3ToSFTPOperator` | [#14](docs/dag_s3_to_sftp_stream.md) | `S3ToSFTPOperator` | Override `execute` so objects stream instead of staging on disk |
+| `StreamingS3ToFTPSOperator` | [#15](docs/dag_s3_to_ftps_stream.md) | `S3ToFTPOperator` | Stream *and* swap the hardcoded plain-FTP hook for FTPS |
 | `S3PrefixSuffixSensor` | [#9](docs/dag_s3_prefix_suffix_sensor.md) | `S3KeySensor` | Collect every match and push it to XCom; the stock sensor pushes nothing |
 
 They fall into three tiers, and the right one is always the **lowest** that works:
@@ -141,7 +145,7 @@ them in one place at the top of each file if yours differ.
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
 | `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7, #8, #10, #11, #12) |
 | `smb_test_001` | `samba` | host, **schema = share name**, login, password (#12, #13) |
-| `aws_s3_test_001` | `aws` | login = access key id, password = secret; `{"region_name": "..."}` in extra (#9, #10, #11, #13) |
+| `aws_s3_test_001` | `aws` | login = access key id, password = secret; `{"region_name": "..."}` in extra (#9, #10, #11, #13, #14, #15) |
 
 For SAS auth, put the token in the connection's **extra** as
 `{"sas_token": "?sp=...&sig=..."}` and set **login to the storage account name** —
@@ -171,10 +175,10 @@ laptop (VPN, `/etc/hosts`, mesh network) often does not resolve inside the clust
 ### Providers
 
 ```
-apache-airflow-providers-ftp                 # for #1, #2, #3, #5, #8
-apache-airflow-providers-sftp                # for #3, #4, #6
+apache-airflow-providers-ftp                 # for #1, #2, #3, #5, #8, #15
+apache-airflow-providers-sftp                # for #3, #4, #6, #14
 apache-airflow-providers-microsoft-azure     # for #4, #5, #6, #7, #8
-apache-airflow-providers-amazon              # for #9, #10, #11, #13
+apache-airflow-providers-amazon              # for #9, #10, #11, #13, #14, #15
 apache-airflow-providers-samba               # for #12, #13
 ```
 
@@ -341,7 +345,29 @@ call. Also that boto3's threads are safe against a non-seekable destination, and
 
 ---
 
-## 14. [`dag_cyclic.py`](dag_cyclic.py)
+## 14. [`dag_s3_to_sftp_stream.py`](dag_s3_to_sftp_stream.py)
+
+`nix-dag-s3-to-sftp-stream` — streams an object from Amazon S3 to the SFTP server.
+
+**Teaches:** a third provider operator that stages to a temp file, fixed the same
+way. Fastest path in the set at ~20 MiB/s.
+
+→ **[Full detail: `docs/dag_s3_to_sftp_stream.md`](docs/dag_s3_to_sftp_stream.md)**  ·  📄 **[Source: `dag_s3_to_sftp_stream.py`](dag_s3_to_sftp_stream.py)**
+
+---
+
+## 15. [`dag_s3_to_ftps_stream.py`](dag_s3_to_ftps_stream.py)
+
+`nix-dag-s3-to-ftps-stream` — streams an object from Amazon S3 to the FTPS server.
+
+**Teaches:** when a provider operator needs **two** fixes — the staging logic
+*and* a hardcoded hook that cannot do TLS.
+
+→ **[Full detail: `docs/dag_s3_to_ftps_stream.md`](docs/dag_s3_to_ftps_stream.md)**  ·  📄 **[Source: `dag_s3_to_ftps_stream.py`](dag_s3_to_ftps_stream.py)**
+
+---
+
+## 16. [`dag_cyclic.py`](dag_cyclic.py)
 
 `nix-dag-cyclic` — a cyclic job: fires every 5 minutes, one run at a time.
 
@@ -353,7 +379,7 @@ call. Also that boto3's threads are safe against a non-seekable destination, and
 
 ## Running them
 
-All except #14 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
+All except #16 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
 the CLI:
 
 ```bash
@@ -379,7 +405,9 @@ the default fixture on the left and a larger file on the right.
 | 11 | `airflow dags trigger nix-dag-s3-to-blob-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/","blob_prefix":"xcloud"}'` |
 | 12 | `airflow dags trigger nix-dag-blob-to-smb-stream --conf '{"filename":"probe.txt","blob_prefix":"incoming/"}'` |
 | 13 | `airflow dags trigger nix-dag-s3-to-smb-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/"}'` |
-| 14 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
+| 14 | `airflow dags trigger nix-dag-s3-to-sftp-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/"}'` |
+| 15 | `airflow dags trigger nix-dag-s3-to-ftps-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/"}'` |
+| 16 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
 
 ### Testing with a large file
 
@@ -438,7 +466,7 @@ constant-memory behaviour there. Every other DAG streams at any size.
 ## Write-then-rename, and where it does not apply
 
 The DAGs with a **filesystem-like destination** — SFTP, FTPS or SMB (#3, #6, #8,
-#12, #13) — write to `<name>.part` and rename once the last byte lands. A consumer polling the drop
+#12, #13, #14, #15) — write to `<name>.part` and rename once the last byte lands. A consumer polling the drop
 directory therefore never sees a partial file, and a failed run leaves an obvious
 `.part` rather than a truncated file indistinguishable from a good one.
 
@@ -500,6 +528,8 @@ The chunk size comes from whichever call drives the loop, so it differs per DAG:
 | #11 S3 → Blob | Azure block upload | 4 MiB | client config |
 | #12 Blob → SMB | `readinto` (source pushes) | SDK default | no |
 | #13 S3 → SMB | boto3 multipart, threaded | 8 MiB parts | `TransferConfig` |
+| #14 S3 → SFTP | boto3 multipart, threaded | 8 MiB parts | `TransferConfig` |
+| #15 S3 → FTPS | `storbinary` | 8 KiB | `chunk_size` argument |
 
 Only the DAGs whose underlying call accepts a `blocksize` expose a `chunk_size`
 argument. #6 deliberately does not: `putfo` hardcodes `reader.read(32768)`, so an
