@@ -92,6 +92,10 @@ SFTP_DIR = "/home/airflowsftp/incoming"
 # Bytes per retrbinary callback. This is the peak memory of the transfer, not
 # the file size — the pipe applies backpressure, so a slow SFTP side stalls the
 # FTPS reader rather than letting chunks accumulate.
+# Write to <name>.part and rename on success, so a consumer polling the
+# destination never sees a partial file. Set to "" to write directly.
+TEMP_SUFFIX = ".part"
+
 CHUNK_SIZE = 8192
 BUFFER_LIMIT = 2 * 1024**3  # 2 GiB — fail rather than transfer unbounded
 
@@ -180,6 +184,7 @@ def stream_ftps_to_sftp(**context):
     filename = (context["dag_run"].conf or {}).get("filename", "probe.txt")
     src = f"{FTPS_DIR}/{filename}"
     dst = f"{SFTP_DIR}/{filename}"
+    tmp_dst = f"{dst}{TEMP_SUFFIX}" if TEMP_SUFFIX else dst
 
     started = time.monotonic()
     ftps_hook = MyFTPSHook(ftp_conn_id=FTPS_CONN_ID)
@@ -213,7 +218,7 @@ def stream_ftps_to_sftp(**context):
                 with os.fdopen(read_fd, "rb") as reader:
                     # putfo streams from the file object; it never needs the
                     # total size up front, which is what allows a pipe source.
-                    sftp_hook.get_conn().putfo(reader, dst)
+                    sftp_hook.get_conn().putfo(reader, tmp_dst)
             except BaseException as exc:  # surfaced on the main thread below
                 put_error.append(exc)
 
@@ -252,6 +257,15 @@ def stream_ftps_to_sftp(**context):
     # Guards against a truncated transfer that raised nothing on either side.
     if sent != expected:
         raise ValueError(f"size mismatch for {filename}: read {sent}, expected {expected}")
+
+    # Renamed only after every check above passes, so the final name never
+    # appears unless the transfer is known good. posix_rename, not rename:
+    # plain SFTP rename fails with "OSError: Failure" when the target exists,
+    # which would break a retry over a previous run's file.
+    if TEMP_SUFFIX:
+        with sftp_hook.get_managed_conn() as sftp_client:
+            sftp_client.posix_rename(tmp_dst, dst)
+        task_log.info("[ftps_to_sftp] renamed %s -> %s", tmp_dst, dst)
 
     task_log.info("%s -> %s", _summary("ftps_to_sftp", sent, time.monotonic() - started), dst)
     return {"source": src, "destination": dst, "size": sent}

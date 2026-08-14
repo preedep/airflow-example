@@ -66,6 +66,33 @@ rather than offering a knob that does nothing.
 `MAX_BYTES` caps a single transfer; a larger blob fails before any bytes move
 rather than running unbounded.
 
+#### Write-then-rename
+
+The transfer writes to `<remote_path>.part` and renames it once the last byte
+lands. Two reasons, both of which matter on a shared drop directory:
+
+- A consumer polling the destination never sees a **partial file**. Without this
+  a downstream job can pick up a half-written file that looks complete.
+- A failed run leaves an obvious `.part` rather than a truncated file that is
+  indistinguishable from a good one.
+
+The rename is a metadata operation — no data is re-transferred — so it is
+effectively free on SFTP. `temp_suffix=""` disables it.
+
+**`posix_rename`, not `rename`.** Plain SFTP `rename` fails when the target
+exists:
+
+```
+OSError: Failure
+```
+
+so a retry over a previous run's file would break. `posix_rename` overwrites
+atomically, which is exactly what this pattern needs.
+
+Note the object-store demos do **not** do this: neither Blob nor S3 has a rename,
+so the equivalent would be a full server-side copy — and neither makes a
+partially-uploaded object visible in the first place.
+
 #### Idempotency
 
 `putfo` overwrites the destination, so a retry replaces whatever a failed run
@@ -144,6 +171,9 @@ class BlobToSFTPStreamOperator(BaseOperator):
     :param max_bytes: reject a blob larger than this before any bytes move.
     :param confirm: `stat` the file after writing and compare sizes, so a
         truncated write fails here rather than downstream.
+    :param temp_suffix: write to `<remote_path><temp_suffix>` and rename on
+        success, so a consumer never sees a partial file. Set to "" to write
+        directly to the final name.
     """
 
     # Rendered from dag_run.conf at run time, which is why the paths are operator
@@ -163,6 +193,7 @@ class BlobToSFTPStreamOperator(BaseOperator):
         remote_path: str,
         max_bytes: int = MAX_BYTES,
         confirm: bool = True,
+        temp_suffix: str = ".part",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -173,6 +204,7 @@ class BlobToSFTPStreamOperator(BaseOperator):
         self.remote_path = remote_path
         self.max_bytes = max_bytes
         self.confirm = confirm
+        self.temp_suffix = temp_suffix
 
     # cached_property, matching the provider convention: the hook is built on
     # first use rather than in __init__, so constructing the operator at DAG
@@ -214,6 +246,12 @@ class BlobToSFTPStreamOperator(BaseOperator):
             container_name=self.container_name, blob_name=self.blob_name
         )
 
+        # Write to a temporary name and rename once the transfer completes, so a
+        # consumer watching the destination directory never sees a partial file
+        # and a failed run leaves an obvious <name>.part rather than a truncated
+        # file that looks finished. See `temp_suffix` on the operator.
+        target = self.remote_path + self.temp_suffix if self.temp_suffix else self.remote_path
+
         # get_managed_conn(), not get_conn(): every decorated SFTPHook method
         # closes its session on exit, so a connection fetched outside this
         # context manager can already be dead by the time it is used.
@@ -222,10 +260,20 @@ class BlobToSFTPStreamOperator(BaseOperator):
             # sizes, so a short write raises here rather than passing silently.
             attrs = sftp_client.putfo(
                 downloader,
-                self.remote_path,
+                target,
                 file_size=expected,
                 confirm=self.confirm,
             )
+
+            if self.temp_suffix:
+                # posix_rename, not rename: plain SFTP rename fails with
+                # "OSError: Failure" when the target already exists, so a retry
+                # over a previous run's file would break. posix_rename overwrites
+                # atomically, which is the behaviour this pattern needs.
+                sftp_client.posix_rename(target, self.remote_path)
+                self.log.info(
+                    "[blob_to_sftp] renamed %s -> %s", target, self.remote_path
+                )
 
         # With confirm=True paramiko has already stat'ed the file and raised on a
         # mismatch; this re-checks its number to fail with a message naming the

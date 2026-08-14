@@ -403,6 +403,42 @@ constant-memory behaviour there. Every other DAG streams at any size.
 
 ---
 
+## Write-then-rename, and where it does not apply
+
+The three DAGs with an **SFTP or FTPS destination** (#3, #6, #8) write to
+`<name>.part` and rename once the last byte lands. A consumer polling the drop
+directory therefore never sees a partial file, and a failed run leaves an obvious
+`.part` rather than a truncated file indistinguishable from a good one.
+
+The rename is a metadata operation, so no data is re-transferred. Pass
+`temp_suffix=""` to write directly to the final name.
+
+The object-store DAGs (#4, #5, #9, #10, #11) deliberately **do not** do this:
+
+| Destination | Rename | Cost |
+|---|---|---|
+| SFTP | `posix_rename()` | free, atomic |
+| FTPS | `rename()` (RNFR/RNTO) | free, atomic |
+| Azure Blob | none — only `start_copy_from_url` | full server-side copy |
+| S3 | none — `copy_object` + delete | full server-side copy |
+
+Object stores have no rename, so the equivalent would double the data written and
+the bill — and they do not expose a partially-uploaded object in the first place,
+which is the problem the pattern solves.
+
+**Use `posix_rename` on SFTP, not `rename`.** Plain `rename` fails when the
+target exists:
+
+```
+OSError: Failure
+```
+
+which breaks a retry over a previous run's file. `posix_rename` overwrites
+atomically. FTPS `rename` overwrote on the server tested here, but that is
+server-dependent — a stricter server may need the target deleted first.
+
+---
+
 ## How the streaming DAGs chunk
 
 "Streaming" here always means **chunked**: one side reads a chunk, the other
