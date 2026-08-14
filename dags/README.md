@@ -21,17 +21,23 @@ ephemeral pod. Most of the design decisions here follow from that; see
 
 ### Where things live
 
-This file is the **index**: what exists, what to run first, what to set up, and
-how to deploy. Each DAG's full write-up — the patterns it demonstrates, the traps
-it hit, its log output — is a separate file under `docs/`.
+This file is the **index**: what each example is, what order to run them in, and
+what to set up first. Each DAG's full write-up — the patterns it demonstrates,
+the traps it hit, its log output — is a separate file under `docs/`.
 
 ```
 dags/
-  README.md              you are here — start, prerequisites, deploy
+  README.md              you are here — the index
   dag_<name>.py          the DAG itself
   docs/dag_<name>.md     that DAG's full detail
   files/                 fixtures a DAG reads at runtime
 ```
+
+**Deployment is not covered here** — copy these files into your DAG folder
+however you already ship DAGs (git-sync, a baked image, object storage, rsync).
+The only requirement is that `dags/files/` lands beside the DAG files, since #1
+reads a fixture from it at runtime. `docs/` does not need to ship; each DAG's
+`doc_md` carries the same explanation to the UI.
 
 The same explanation is also on each DAG's `doc_md`, which renders in the Airflow
 UI under **Graph → task → Documentation** — usually the fastest place to read it
@@ -289,81 +295,31 @@ does wildcards, but tells you nothing about what it matched.
 
 ---
 
-## Deploying
+## What a parse check cannot catch
 
-Deployment is environment-specific. In this repo:
-
-```bash
-./scripts/deploy-dag.sh dag_ftps_sensor      # one DAG
-./scripts/deploy-dag.sh --all                # all of them
-```
-
-It checks connectivity, parses the DAG, runs the integrity tests, then copies the
-files — refusing to ship anything that fails. It also syncs `dags/files/`.
-
-`docs/` is **not** deployed, by design: it is for readers of the repo, and the DAG
-folder is scanned by the dag-processor. Each DAG's `doc_md` is what travels to the
-server, and it carries the same explanation.
-
-If your deployment uses git-sync, a baked image, or object storage instead, the
-only requirement is that `dags/files/` lands beside the DAGs.
-
-New DAGs land **paused**:
-
-```bash
-airflow dags unpause <dag_id>
-```
-
-Allow time for the DAG processor to pick up a new file before assuming it failed.
-It parses the whole DAG folder on a cycle, so on a busy instance a new file can
-take **minutes**, not seconds, to appear. Absent from the UI *and* absent from
-`list-import-errors` means "not parsed yet" — a genuinely broken file shows up in
-the import-error list rather than staying invisible.
-
----
-
-## Local validation
-
-```bash
-uv sync
-.venv/bin/python dags/dag_<name>.py     # parse — exit 0, no output
-.venv/bin/python -m pytest tests/
-.venv/bin/ruff check dags/
-```
-
-`tests/test_dag_integrity.py` applies to every `dags/dag_*.py` automatically. It
-enforces the project's constraints: no deprecated Airflow 2.x APIs, `doc_md` on the
-DAG and every task, `catchup=False`, no top-level I/O, standalone files.
-
-A clean local parse does not prove a third-party import exists in the **server**
-image. Check import errors after deploying.
-
-### What a parse check cannot catch
-
-Every bug worth reading about in this file parsed cleanly and passed the integrity
-tests. They only failed against a live server:
+Every trap documented in these examples parsed cleanly. They only failed against
+a live server:
 
 | Bug | Where it surfaces |
 |---|---|
 | a path that is a file where a directory is expected | first `listdir` |
 | a hook whose connection was already closed | first call on the dead client |
 | a kwarg the SDK forwards to its HTTP transport | inside the request |
-| a provider missing from the server image | dag-processor import |
+| a provider missing from the runtime image | DAG import |
 
-So treat the local checks as a fast filter, not proof. The first real run against
+So treat a clean parse as a fast filter, not proof. The first real run against
 the target systems is the actual test.
 
-For the threaded parts specifically — the `os.pipe()` bridge in #5 — a parse proves
-nothing at all: a deadlock or a swallowed exception looks identical to working code
-until it runs. Those are worth exercising directly against fake hooks, feeding
-`execute()` a fake that pushes known bytes and asserting on what the fake upload
-received, plus one case per failure mode (source missing, oversize, upload raises,
-truncated read).
+For threaded code — the `os.pipe()` bridge in #5 — a parse proves nothing at all:
+a deadlock or a swallowed exception looks identical to working code until it runs.
+Exercise those against fake hooks: feed `execute()` a fake that pushes known bytes,
+assert on what the fake destination received, and add one case per failure mode
+(source missing, oversize, upload raises, truncated read).
 
-That is how #5's `BrokenPipeError` masking was found — the happy path passed on the
-first try, and only the "upload raises" case revealed that the real error was being
-hidden behind a broken pipe. It would have looked fine in any test that only
-transfers a file successfully.
+That is how #5's `BrokenPipeError` masking was found — the happy path passed on
+the first try, and only the "upload raises" case revealed that the real error was
+being hidden behind a broken pipe. Any test that only transfers a file
+successfully would have missed it.
 
 ---
 
@@ -448,9 +404,9 @@ them.
 | `Session.request() got an unexpected keyword argument` | passed a client-config kwarg (e.g. `max_block_size`) to `upload()` |
 | `No such file` writing over SFTP | destination directory does not exist — `putfo` will not create it |
 | size mismatch reporting `wrote None` | `putfo(confirm=False)` returns empty `SFTPAttributes`; nothing to compare |
-| DAG missing from UI, no import error | processor has not parsed it yet |
-| DAG present but never runs | still paused |
-| Works locally, fails on the server | provider missing from the server image, or a connection/variable not set |
+| DAG missing from UI, no import error | the DAG processor has not parsed it yet — it scans on a cycle |
+| DAG present but never runs | still paused; these are all manual-trigger except #10 |
+| Parses locally, fails in a worker | provider missing from your runtime image, or a connection/Variable not set |
 
 Check import errors first — an entry there invalidates everything else:
 
