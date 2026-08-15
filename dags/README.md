@@ -68,7 +68,8 @@ The DAGs build on each other. Run top to bottom the first time.
 | 15 | [`dag_s3_to_ftps_stream.py`](dag_s3_to_ftps_stream.py) | two overrides, not one — logic *and* hook | an object in the S3 bucket (#10 writes one) |
 | 16 | [`dag_sftp_to_s3_stream.py`](dag_sftp_to_s3_stream.py) | a provider that streams but forgets `prefetch` | a file in the SFTP source directory |
 | 17 | [`dag_deadline_alert.py`](dag_deadline_alert.py) | alert on a slow run without failing it | — |
-| 18 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
+| 18 | [`dag_sftp_sensor.py`](dag_sftp_sensor.py) | the sensor that needs no subclass | a file in the SFTP source directory |
+| 19 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -88,7 +89,7 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#17 and #18 need no connection at all** and is the only scheduled DAG here; the rest are
+**#17 and #19 need no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -179,7 +180,7 @@ laptop (VPN, `/etc/hosts`, mesh network) often does not resolve inside the clust
 
 ```
 apache-airflow-providers-ftp                 # for #1, #2, #3, #5, #8, #15
-apache-airflow-providers-sftp                # for #3, #4, #6, #14, #16
+apache-airflow-providers-sftp                # for #3, #4, #6, #14, #16, #18
 apache-airflow-providers-microsoft-azure     # for #4, #5, #6, #7, #8
 apache-airflow-providers-amazon              # for #9, #10, #11, #13, #14, #15
 apache-airflow-providers-samba               # for #12, #13
@@ -393,7 +394,18 @@ callback-import trap that makes them silently never fire.
 
 ---
 
-## 18. [`dag_cyclic.py`](dag_cyclic.py)
+## 18. [`dag_sftp_sensor.py`](dag_sftp_sensor.py)
+
+`nix-dag-sftp-sensor` — waits for files matching a glob on the SFTP server.
+
+**Teaches:** the one sensor here that needs **no** subclass — `SFTPSensor` already
+does pattern matching *and* the downstream hand-off. Check before extending.
+
+→ **[Full detail: `docs/dag_sftp_sensor.md`](docs/dag_sftp_sensor.md)**  ·  📄 **[Source: `dag_sftp_sensor.py`](dag_sftp_sensor.py)**
+
+---
+
+## 19. [`dag_cyclic.py`](dag_cyclic.py)
 
 `nix-dag-cyclic` — a cyclic job: fires every 5 minutes, one run at a time.
 
@@ -405,7 +417,7 @@ callback-import trap that makes them silently never fire.
 
 ## Running them
 
-All except #18 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
+All except #19 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
 the CLI:
 
 ```bash
@@ -435,7 +447,8 @@ the default fixture on the left and a larger file on the right.
 | 15 | `airflow dags trigger nix-dag-s3-to-ftps-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/"}'` |
 | 16 | `airflow dags trigger nix-dag-sftp-to-s3-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/"}'` |
 | 17 | `airflow dags trigger nix-dag-deadline-alert` |
-| 18 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
+| 18 | `airflow dags trigger nix-dag-sftp-sensor --conf '{"pattern":"*.csv"}'` |
+| 19 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
 
 ### Testing with a large file
 

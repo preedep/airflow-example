@@ -101,10 +101,23 @@ def test_no_deprecation_warnings_on_parse(dag_file):
 
     # Run in a subprocess: these warnings fire once per module import, so an
     # in-process check passes spuriously when another test imported first.
+    # Deprecations raised *inside provider code* are ignored — they are
+    # upstream's to fix and a DAG cannot avoid them short of not using the
+    # provider. Everything else is still an error, so a deprecated import or
+    # kwarg in the DAG file itself fails the test.
+    #
+    # Known offender: apache-airflow-providers-sftp 5.7.3 imports the deprecated
+    # airflow.utils.timezone shims at module scope. Verified identical on the
+    # server image, so this is not a local-venv artifact.
     probe = (
         "import warnings, sys\n"
         "warnings.simplefilter('error', FutureWarning)\n"
         "warnings.simplefilter('error', DeprecationWarning)\n"
+        # Ignore must come after simplefilter: later filters take precedence.
+        "warnings.filterwarnings('ignore', category=FutureWarning,\n"
+        "                        module=r'airflow\\.providers\\..*')\n"
+        "warnings.filterwarnings('ignore', category=DeprecationWarning,\n"
+        "                        module=r'airflow\\.providers\\..*')\n"
         "from airflow.models import DagBag\n"
         f"b = DagBag(dag_folder={str(dag_file)!r}, include_examples=False)\n"
         "sys.exit(1 if b.import_errors else 0)\n"
