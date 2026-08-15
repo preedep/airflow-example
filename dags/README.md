@@ -56,6 +56,57 @@ while a run is in front of you.
 
 ---
 
+## Browse by category
+
+The numbered order below is a **run order** — each DAG builds on what an earlier
+one left behind. This table is the same set grouped by what they *are*, for when
+you know the kind of thing you need.
+
+The files themselves stay flat in `dags/`. That is deliberate: each demo is a
+standalone single file you can copy out on its own, and the tooling
+(`dag_*.py` globbing in the tests and deploy script) depends on it.
+
+### Sensors — wait for something to appear
+
+| # | DAG | Watches |
+|---|---|---|
+| [2](#2-dag_ftps_sensorpydag_ftps_sensorpy) | `dag_ftps_sensor.py` | a named file on FTPS |
+| [7](#7-dag_wasb_prefix_suffix_sensorpydag_wasb_prefix_suffix_sensorpy) | `dag_wasb_prefix_suffix_sensor.py` | Azure Blob, prefix **and** suffix |
+| [9](#9-dag_s3_prefix_suffix_sensorpydag_s3_prefix_suffix_sensorpy) | `dag_s3_prefix_suffix_sensor.py` | S3, prefix **and** suffix |
+| [18](#18-dag_sftp_sensorpydag_sftp_sensorpy) | `dag_sftp_sensor.py` | SFTP, `fnmatch` glob |
+
+### Transfers — move bytes without staging on disk
+
+Every one streams; none writes the payload to the worker pod's disk.
+
+| From ↓ / To → | FTPS | SFTP | SMB | Blob | S3 |
+|---|---|---|---|---|---|
+| **local** | [1](#1-dag_ftps_simple_transferpydag_ftps_simple_transferpy) | — | — | — | — |
+| **FTPS** | — | [3](#3-dag_ftps_to_sftp_stream_transferpydag_ftps_to_sftp_stream_transferpy) | — | [5](#5-dag_ftps_to_blob_streampydag_ftps_to_blob_streampy) | — |
+| **SFTP** | — | — | — | [4](#4-dag_sftp_to_blob_streampydag_sftp_to_blob_streampy) | [16](#16-dag_sftp_to_s3_streampydag_sftp_to_s3_streampy) |
+| **Blob** | [8](#8-dag_blob_to_ftps_streampydag_blob_to_ftps_streampy) | [6](#6-dag_blob_to_sftp_streampydag_blob_to_sftp_streampy) | [12](#12-dag_blob_to_smb_streampydag_blob_to_smb_streampy) | — | [10](#10-dag_blob_to_s3_streampydag_blob_to_s3_streampy) |
+| **S3** | [15](#15-dag_s3_to_ftps_streampydag_s3_to_ftps_streampy) | [14](#14-dag_s3_to_sftp_streampydag_s3_to_sftp_streampy) | [13](#13-dag_s3_to_smb_streampydag_s3_to_smb_streampy) | [11](#11-dag_s3_to_blob_streampydag_s3_to_blob_streampy) | — |
+
+Reading a row against its column is the fastest way to see the repo's recurring
+lesson: **the same pair of endpoints needs different plumbing depending on
+direction.** FTPS→Blob (#5) needs an `os.pipe()`; Blob→FTPS (#8) does not.
+
+### Messaging
+
+| # | DAG | Role |
+|---|---|---|
+| [19](#19-dag_sqs_producerpydag_sqs_producerpy) | `dag_sqs_producer.py` | publish, then trigger #20 and wait |
+| [20](#20-dag_sqs_consumerpydag_sqs_consumerpy) | `dag_sqs_consumer.py` | consume and verify the batch |
+
+### Scheduling and alerting
+
+| # | DAG | Demonstrates |
+|---|---|---|
+| [17](#17-dag_deadline_alertpydag_deadline_alertpy) | `dag_deadline_alert.py` | alert on a slow run **without** failing it |
+| [21](#21-dag_cyclicpydag_cyclicpy) | `dag_cyclic.py` | non-overlapping scheduled runs |
+
+---
+
 ## Run them in this order
 
 The DAGs build on each other. Run top to bottom the first time.
