@@ -307,6 +307,12 @@ class FTPStoBlobStreamOperator(BaseOperator):
                 # reader closes the fd exactly once.
                 try:
                     with os.fdopen(read_fd, "rb") as reader:
+                        # BYTE PATH — no local file, no full-file buffer:
+                        #   FTPS socket -> retrbinary callback -> os.pipe()
+                        #   (kernel buffer) -> this reader -> HTTPS PUT -> blob.
+                        # The pipe is what bounds memory: if Azure is slower the
+                        # pipe fills and the FTPS write blocks, rather than
+                        # chunks piling up on the heap.
                         self.wasb_hook.upload(
                             container_name=self.container_name,
                             blob_name=self.blob_name,

@@ -280,6 +280,9 @@ class StreamingS3ToFTPSOperator(S3ToFTPOperator):
 
         with self.ftps_hook as ftps:
             conn = ftps.get_conn()
+            # BYTE PATH — nothing touches the worker pod's disk:
+            #   HTTPS GET (S3) -> response Body -> storbinary reads 8 KiB ->
+            #   FTPS data socket. storbinary pulls from the body directly.
             response = conn.storbinary(
                 f"STOR {target}", body, blocksize=self.chunk_size
             )

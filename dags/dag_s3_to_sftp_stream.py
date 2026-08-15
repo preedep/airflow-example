@@ -225,6 +225,10 @@ class StreamingS3ToSFTPOperator(S3ToSFTPOperator):
                 # thread pool already overlaps writes, but it matters on a
                 # high-latency link.
                 handle.set_pipelined(True)
+                # BYTE PATH — nothing touches the worker pod's disk:
+                #   HTTPS GET (S3) -> boto3 8 MiB part buffer -> SFTP socket.
+                # boto3 writes straight into the remote handle; the stock
+                # operator would have staged the whole object first.
                 s3_client.download_fileobj(self.s3_bucket, self.s3_key, handle)
 
             # download_fileobj reports nothing, so the size is read back from

@@ -226,6 +226,9 @@ class StreamingSFTPToS3Operator(SFTPToS3Operator):
                 # capping throughput at latency rather than bandwidth. Measured
                 # on 50 MiB: 10.5s without, 2.2s with.
                 data.prefetch(expected)
+                # BYTE PATH — nothing touches the worker pod's disk:
+                #   SFTP socket -> `data` handle (prefetch window) -> boto3
+                #   8 MiB part buffer -> HTTPS PUT (S3).
                 s3_client.upload_fileobj(data, self.s3_bucket, self.s3_key)
 
         # upload_fileobj returns None, so the size is read back from S3. This is

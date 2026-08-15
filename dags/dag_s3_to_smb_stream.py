@@ -247,6 +247,10 @@ class S3ToSMBStreamOperator(BaseOperator):
         # use_threads=False on a 50 MiB object. Note this is the opposite of the
         # Azure *upload* path, which needs max_concurrency=1 for such a source.
         with self.samba_hook.open_file(target, mode="wb") as handle:
+            # BYTE PATH — nothing touches the worker pod's disk:
+            #   HTTPS GET (S3) -> boto3 part buffer -> SMB write -> share.
+            # boto3 writes each part at an explicit offset, which is why a
+            # non-seekable SMB handle survives the threaded transfer.
             s3_client.download_fileobj(self.bucket_name, self.key, handle)
 
         # download_fileobj reports nothing, so the size is read back from the

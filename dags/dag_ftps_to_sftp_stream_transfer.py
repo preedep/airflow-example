@@ -202,6 +202,10 @@ def stream_ftps_to_sftp(**context):
         # An OS pipe, not a queue or a buffer: it gives backpressure for free.
         # When the SFTP side is slower, the pipe fills and the FTPS write blocks,
         # so the two transfers self-throttle to the slower one.
+        # BYTE PATH — nothing touches the worker pod's disk:
+        #   FTPS socket -> retrbinary callback -> os.pipe() (a kernel buffer,
+        #   not process heap) -> reader thread -> paramiko putfo -> SFTP socket.
+        # Both sockets are open at once and only one 8 KiB chunk is in flight.
         read_fd, write_fd = os.pipe()
         sent = 0
 

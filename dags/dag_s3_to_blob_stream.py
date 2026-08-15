@@ -220,6 +220,11 @@ class StreamingS3ToAzureBlobStorageOperator(S3ToAzureBlobStorageOperator):
         # length and max_concurrency=1 are both required: the S3 body exposes a
         # `seek` attribute but reports seekable() False, and the Azure SDK would
         # otherwise seek it to measure the stream and to split it across threads.
+        # BYTE PATH — nothing touches the worker pod's disk:
+        #   HTTPS GET (S3) -> response Body -> Azure block -> HTTPS PUT.
+        # length= and max_concurrency=1 below are what keep it that way: without
+        # them the SDK would seek the stream to measure and split it, which a
+        # non-seekable body cannot do.
         blob_client.upload_blob(
             body,
             length=expected,
