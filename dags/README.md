@@ -1,14 +1,25 @@
 # Demo DAGs
 
-Apache Airflow **3.x** examples covering file-transfer patterns: uploading to an
-FTPS server, waiting on a file with a sensor, streaming between two servers, and
-streaming into Azure Blob Storage.
+Apache Airflow **3.x** examples, mostly file transfer: uploading to an FTPS
+server, waiting on a file with a sensor, and streaming between servers, object
+stores and SMB shares — every direction across FTPS, SFTP, SMB, Azure Blob and
+S3, none of it staged on disk. Plus three that are not transfers: a queue
+producer/consumer pair, a deadline alert, and a cyclic schedule.
 
-They also work through a progression in **how much of a provider you reuse** —
-using an operator as shipped (#1), extending a sensor (#7), overriding one method
-of a transfer operator (#4), and writing an operator from scratch when the
-provider has nothing (#5, #6, #8). The
-[class table](#classes-defined-in-these-dags) below maps each one to its file.
+They also work through a progression in **how much of a provider you reuse**:
+
+| Tier | Example |
+|---|---|
+| use an operator as shipped | #1, #18 |
+| extend a sensor or swap a hook | #2, #7, #9 |
+| override one method of a transfer operator | #4, #11, #14 |
+| fix a *behaviour*, not the plumbing | #16 — the provider streams, but forgets `prefetch` |
+| write an operator from scratch | #5, #6, #8, #12, #13 |
+
+The [class table](#classes-defined-in-these-dags) below maps each one to its
+file. The lesson repeated across them: **read the provider class before
+extending it.** Several needed only one method replaced, one needed nothing at
+all, and one needed a hardcoded hook worked around.
 
 Each DAG is a **standalone single file** — no shared helper module, no subfolders,
 no cross-DAG imports. Copy one out of this repo and it still works. That is why
@@ -69,7 +80,9 @@ The DAGs build on each other. Run top to bottom the first time.
 | 16 | [`dag_sftp_to_s3_stream.py`](dag_sftp_to_s3_stream.py) | a provider that streams but forgets `prefetch` | a file in the SFTP source directory |
 | 17 | [`dag_deadline_alert.py`](dag_deadline_alert.py) | alert on a slow run without failing it | — |
 | 18 | [`dag_sftp_sensor.py`](dag_sftp_sensor.py) | the sensor that needs no subclass | a file in the SFTP source directory |
-| 19 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
+| 19 | [`dag_sqs_producer.py`](dag_sqs_producer.py) | trigger another DAG and wait for it | an SQS queue |
+| 20 | [`dag_sqs_consumer.py`](dag_sqs_consumer.py) | consume a queue; driven by #19 | messages from #19 |
+| 21 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -89,7 +102,7 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#17 and #19 need no connection at all** and is the only scheduled DAG here; the rest are
+**#17 and #21 need no connection at all** and is the only scheduled DAG here; the rest are
 manual-trigger only.
 
 ---
@@ -149,6 +162,7 @@ them in one place at the top of each file if yours differ.
 | `sftp_test_001` | `SFTP` | host, login, password, port `22` |
 | `wasb-nickstorageairflow002` | `wasb` | login = storage account; SAS in extra (#4, #5, #6, #7, #8, #10, #11, #12) |
 | `smb_test_001` | `samba` | host, **schema = share name**, login, password (#12, #13) |
+| `aws_sqs_test_001` | `aws` | same shape as the S3 connection; queue URL passed per operation (#19, #20) |
 | `aws_s3_test_001` | `aws` | login = access key id, password = secret; `{"region_name": "..."}` in extra (#9, #10, #11, #13, #14, #15, #16) |
 
 For SAS auth, put the token in the connection's **extra** as
@@ -182,7 +196,7 @@ laptop (VPN, `/etc/hosts`, mesh network) often does not resolve inside the clust
 apache-airflow-providers-ftp                 # for #1, #2, #3, #5, #8, #15
 apache-airflow-providers-sftp                # for #3, #4, #6, #14, #16, #18
 apache-airflow-providers-microsoft-azure     # for #4, #5, #6, #7, #8
-apache-airflow-providers-amazon              # for #9, #10, #11, #13, #14, #15
+apache-airflow-providers-amazon              # for #9, #10, #11, #13, #14, #15, #16, #19, #20
 apache-airflow-providers-samba               # for #12, #13
 ```
 
@@ -405,7 +419,30 @@ does pattern matching *and* the downstream hand-off. Check before extending.
 
 ---
 
-## 19. [`dag_cyclic.py`](dag_cyclic.py)
+## 19. [`dag_sqs_producer.py`](dag_sqs_producer.py)
+
+`nix-dag-sqs-producer` — publishes messages to SQS, triggers the consumer, and
+waits for it to finish.
+
+**Teaches:** `TriggerDagRunOperator` as a real hand-off — `wait_for_completion`
+defaults to `False`, which would prove nothing.
+
+→ **[Full detail: `docs/dag_sqs_producer.md`](docs/dag_sqs_producer.md)**  ·  📄 **[Source: `dag_sqs_producer.py`](dag_sqs_producer.py)**
+
+---
+
+## 20. [`dag_sqs_consumer.py`](dag_sqs_consumer.py)
+
+`nix-dag-sqs-consumer` — consumes the queue and verifies it read #19's batch.
+
+**Teaches:** `SqsSensor`, and why `delete_message_on_reception=True` means the
+messages are gone before your downstream task runs.
+
+→ **[Full detail: `docs/dag_sqs_consumer.md`](docs/dag_sqs_consumer.md)**  ·  📄 **[Source: `dag_sqs_consumer.py`](dag_sqs_consumer.py)**
+
+---
+
+## 21. [`dag_cyclic.py`](dag_cyclic.py)
 
 `nix-dag-cyclic` — a cyclic job: fires every 5 minutes, one run at a time.
 
@@ -417,7 +454,7 @@ does pattern matching *and* the downstream hand-off. Check before extending.
 
 ## Running them
 
-All except #19 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
+All except #21 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
 the CLI:
 
 ```bash
@@ -448,7 +485,9 @@ the default fixture on the left and a larger file on the right.
 | 16 | `airflow dags trigger nix-dag-sftp-to-s3-stream --conf '{"filename":"probe.txt","s3_prefix":"incoming/"}'` |
 | 17 | `airflow dags trigger nix-dag-deadline-alert` |
 | 18 | `airflow dags trigger nix-dag-sftp-sensor --conf '{"pattern":"*.csv"}'` |
-| 19 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
+| 19 | `airflow dags trigger nix-dag-sqs-producer --conf '{"message_count":3,"batch_label":"demo"}'` |
+| 20 | *(not triggered directly — #19 does it)*; to run alone: `airflow dags trigger nix-dag-sqs-consumer` |
+| 21 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
 
 ### Testing with a large file
 
