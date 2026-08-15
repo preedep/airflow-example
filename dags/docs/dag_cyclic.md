@@ -28,6 +28,12 @@ with DAG(
 `dagrun_timeout` matters more than it looks: with `max_active_runs=1`, one hung run
 blocks the cycle indefinitely. The timeout bounds that.
 
+**Airflow 3 adds a real alternative.** A
+[deadline alert](dag_deadline_alert.md) fires a callback when a run overruns
+*without* failing it — which is the callback this section works around. Use a
+deadline when you want to be told; keep the timeouts when you want the run
+stopped.
+
 **Pattern: there is no timeout callback — a timeout arrives as a failure.** To log
 one distinctly you have to identify it yourself, at two levels:
 
