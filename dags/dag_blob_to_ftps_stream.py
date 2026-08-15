@@ -304,6 +304,9 @@ class BlobToFTPSStreamOperator(BaseOperator):
             # storbinary drives the transfer, calling downloader.read() per
             # block until it returns empty. STOR truncates any existing file,
             # which is what makes a retry replace rather than append.
+            # BYTE PATH — nothing touches the worker pod's disk:
+            #   HTTPS GET -> downloader -> storbinary reads 8 KiB -> FTPS data
+            #   socket. storbinary pulls, so one block is resident at a time.
             response = conn.storbinary(
                 f"STOR {target}", downloader, blocksize=self.chunk_size
             )

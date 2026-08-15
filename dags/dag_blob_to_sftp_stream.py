@@ -258,6 +258,9 @@ class BlobToSFTPStreamOperator(BaseOperator):
         with self.sftp_hook.get_managed_conn() as sftp_client:
             # confirm=True makes paramiko stat the file afterwards and compare
             # sizes, so a short write raises here rather than passing silently.
+            # BYTE PATH — nothing touches the worker pod's disk:
+            #   HTTPS GET -> downloader -> putfo reads 32 KiB -> SFTP socket.
+            # putfo pulls, so only one 32 KiB chunk exists at any moment.
             attrs = sftp_client.putfo(
                 downloader,
                 target,

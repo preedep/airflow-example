@@ -218,6 +218,10 @@ class StreamingSFTPToWasbOperator(SFTPToWasbOperator):
                     # the block size we wanted anyway; changing it means
                     # configuring the BlobServiceClient, which WasbHook builds
                     # internally.
+                    # BYTE PATH — nothing touches the worker pod's disk:
+                    #   SFTP socket -> `remote` handle -> 4 MiB Azure block
+                    #   -> HTTPS PUT -> blob. One block resident at a time, so a
+                    #   2 GiB file costs the same memory as a 2 KiB one.
                     wasb_hook.upload(
                         container_name=self.container_name,
                         blob_name=file.blob_name,

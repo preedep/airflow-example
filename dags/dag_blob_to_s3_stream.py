@@ -231,6 +231,9 @@ class BlobToS3StreamOperator(BaseOperator):
 
         # replace=True: load_file_obj raises ValueError on an existing key
         # otherwise, which would make a retry fail rather than converge.
+        # BYTE PATH — nothing touches the worker pod's disk:
+        #   HTTPS GET (Azure) -> downloader -> boto3 fills an 8 MiB part buffer
+        #   -> HTTPS PUT (S3). Peak memory is a part, not the object.
         self.s3_hook.load_file_obj(
             downloader,
             key=self.key,

@@ -266,6 +266,10 @@ class BlobToSMBStreamOperator(BaseOperator):
         # than the destination pulling. readinto returns the byte count written,
         # which is what the check below compares.
         with self.samba_hook.open_file(target, mode="wb") as handle:
+            # BYTE PATH — nothing touches the worker pod's disk:
+            #   HTTPS GET (Azure) -> readinto pushes chunks -> SMB write.
+            # Inverted from the others: the destination is a *writable*, so the
+            # source drives the loop rather than being pulled from.
             written = downloader.readinto(handle)
 
         if written != expected:
