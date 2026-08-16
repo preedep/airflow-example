@@ -36,7 +36,7 @@ A single number per direction would be misleading, so both are shown.
 | Blob → S3 | 9.3 MiB/s | 4.9 MiB/s |
 | S3 → Blob | — | 8.1 MiB/s |
 | FTPS → Blob | — | 3.8 MiB/s |
-| S3 → SMB | 3.6 MiB/s | 0.4 MiB/s |
+| S3 → SMB | 0.8 MiB/s† | 0.4 MiB/s |
 | SFTP → Blob | 2.4 MiB/s | 1.9 MiB/s |
 
 Two directions were only ever measured under load, so their solo figures are
@@ -45,6 +45,12 @@ blank rather than guessed.
 \* Blob → SMB was re-run on its own rather than taken from the concurrent batch,
 where it hit a filename collision — see [below](#a-collision-worth-knowing-about).
 It is not a like-for-like concurrent figure and is marked accordingly.
+
+† S3 → SMB is genuinely this slow, and it is **not** the network — see
+[the S3 to SMB anomaly](#the-s3-smb-anomaly) below, which is the most
+actionable finding in this document. An earlier 3.6 MiB/s figure for this row
+was withdrawn: those two runs overlapped each other, so it was never a solo
+measurement.
 
 ## What the numbers actually show
 
@@ -57,15 +63,52 @@ and Blob→SFTP at 12.8 against S3→SFTP at 19.9. That is a property of the lin
 each service from here, not of the code — the two DAGs are near-identical in
 structure.
 
-**Chunk size is not the bottleneck.** S3→FTPS moves 8 KiB at a time and is one of
-the fastest; SFTP→Blob uses 4 MiB blocks and is the slowest. The network
-dominates, which is why the earlier decision to leave boto3's threading on
-mattered more than any chunk-size tuning.
+**Chunk size is not the bottleneck — except when it is.** S3→FTPS moves 8 KiB at
+a time and is among the fastest, while SFTP→Blob uses 4 MiB blocks and is near
+the bottom, so for most paths the network dominates.
+
+S3 → SMB is the exception, and a stark one: there the *write* chunk size costs
+23× — see [the anomaly](#the-s3-smb-anomaly) above.
 
 **Concurrency is not uniformly bad.** Two directions got *faster* in the
 concurrent batch (S3→FTPS, SFTP→S3), which is the giveaway that these runs are
 noisy and that scheduling order matters as much as bandwidth. Treat any single
 measurement here as ±50%.
+
+## The S3 → SMB anomaly
+
+This row looked wrong, so it was worth digging into — and the answer is a
+tunable, not a network limit.
+
+Measured with nothing else running, the two legs are individually fast:
+
+| Leg | Time | Throughput |
+|---|---|---|
+| S3 → memory | 2.1 s | 23.4 MiB/s |
+| memory → SMB | 0.6 s | 89.3 MiB/s |
+| **S3 → SMB combined** | **65.5 s** | **0.8 MiB/s** |
+
+Combined is ~30× slower than the *slower* half, which rules out bandwidth. The
+cause is `TransferConfig.io_chunksize`, which defaults to **256 KiB**: a 50 MiB
+transfer becomes ~200 separate SMB writes, and SMB is chatty enough per
+operation that the round-trips dominate.
+
+| Config | Time | Throughput |
+|---|---|---|
+| threads on (what the DAG does today) | 64.9 s | 0.8 MiB/s |
+| `use_threads=False` | 258.2 s | 0.2 MiB/s |
+| `use_threads=False, io_chunksize=8 MiB` | **2.7 s** | **18.4 MiB/s** |
+
+**A 23× speedup from one argument.** Note that turning threads off *alone* makes
+it 4× worse — the two settings interact, so changing one without the other leads
+to the wrong conclusion.
+
+The same change on S3 → SFTP made no difference (98.0 s vs 103.2 s), so this is
+specific to the SMB write path rather than to `download_fileobj` generally.
+
+**The DAGs have not been changed for this yet.** It is a real, reproducible
+improvement for #13 (S3 → SMB), but worth applying deliberately rather than as a
+footnote to a measurement exercise.
 
 ## A collision worth knowing about
 
