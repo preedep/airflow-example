@@ -1,5 +1,9 @@
 # Demo DAGs
 
+> 🇹🇭 **ภาษาไทย: [README_TH.md](README_TH.md)** — a Thai summary of this file.
+> This English version is the source of truth; the Thai one is shorter and links
+> back here for detail.
+
 Apache Airflow **3.x** examples, mostly file transfer: uploading to an FTPS
 server, waiting on a file with a sensor, and streaming between servers, object
 stores and SMB shares — every direction across FTPS, SFTP, SMB, Azure Blob and
@@ -574,6 +578,10 @@ Two things that catch people out:
 - **`blob_prefix` must match where the blob actually is.** The Blob-source DAGs
   read `<blob_prefix><filename>`, so a file uploaded under `large/` needs
   `"blob_prefix":"large/"`, not the `incoming/` default.
+
+Measured results from 24 such runs are collected in
+**[`docs/throughput.md`](docs/throughput.md)** — solo against all-12-concurrent,
+with the caveats that make the numbers meaningful.
 
 Each transfer logs a summary line, which is where the throughput comparison
 lives:
