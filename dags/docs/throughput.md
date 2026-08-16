@@ -1,6 +1,6 @@
 # Measured throughput
 
-Real numbers from **24 runs** of a 50 MiB fixture (52,428,800 bytes), taken from
+Real numbers from **25 runs** of a 50 MiB fixture (52,428,800 bytes), taken from
 the `done:` line each transfer DAG logs. Nothing here is estimated.
 
 ```
@@ -29,7 +29,7 @@ A single number per direction would be misleading, so both are shown.
 | FTPS → SFTP | **37.3 MiB/s** | 31.6 MiB/s |
 | S3 → FTPS | 20.7 MiB/s | **32.7 MiB/s** |
 | S3 → SFTP | 19.9 MiB/s | 1.1 MiB/s |
-| Blob → SMB | 17.7 MiB/s | *(failed — see below)* |
+| Blob → SMB | 17.7 MiB/s | 11.3 MiB/s\* |
 | SFTP → S3 | 7.7 MiB/s | 16.3 MiB/s |
 | Blob → FTPS | 13.7 MiB/s | 11.0 MiB/s |
 | Blob → SFTP | — | 12.8 MiB/s |
@@ -41,6 +41,10 @@ A single number per direction would be misleading, so both are shown.
 
 Two directions were only ever measured under load, so their solo figures are
 blank rather than guessed.
+
+\* Blob → SMB was re-run on its own rather than taken from the concurrent batch,
+where it hit a filename collision — see [below](#a-collision-worth-knowing-about).
+It is not a like-for-like concurrent figure and is marked accordingly.
 
 ## What the numbers actually show
 
@@ -63,9 +67,11 @@ concurrent batch (S3→FTPS, SFTP→S3), which is the giveaway that these runs a
 noisy and that scheduling order matters as much as bandwidth. Treat any single
 measurement here as ±50%.
 
-## The one failure
+## A collision worth knowing about
 
-`Blob → SMB` failed in the concurrent batch:
+Not a throughput result, but the reason the Blob → SMB figure above is starred.
+
+In the all-12 batch that direction failed:
 
 ```
 SMBOSError: [NtStatus 0xc0000043] The process cannot access the file
@@ -78,7 +84,8 @@ for the duration of a write. Timings confirm the overlap exactly — `s3_to_smb`
 held the name from 14:41:39 to 14:43:41, and `blob_to_smb` tried to open it at
 14:42:33.
 
-Re-run alone it completed in 2.8 s at 17.7 MiB/s.
+Re-run alone it completes normally — 2.8 s (17.7 MiB/s) and 4.4 s (11.3 MiB/s)
+across two attempts, the spread being ordinary run-to-run noise.
 
 Worth noting the write-then-rename pattern behaved **correctly under contention**:
 the share ended with one intact 52,428,800-byte file and no orphaned `.part`. A
