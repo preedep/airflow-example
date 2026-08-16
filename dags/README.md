@@ -579,6 +579,10 @@ Two things that catch people out:
   read `<blob_prefix><filename>`, so a file uploaded under `large/` needs
   `"blob_prefix":"large/"`, not the `incoming/` default.
 
+Measured results from 24 such runs are collected in
+**[`docs/throughput.md`](docs/throughput.md)** — solo against all-12-concurrent,
+with the caveats that make the numbers meaningful.
+
 Each transfer logs a summary line, which is where the throughput comparison
 lives:
 
