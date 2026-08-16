@@ -1,5 +1,9 @@
 # Demo DAGs
 
+> 🇹🇭 **ภาษาไทย: [README_TH.md](README_TH.md)** — a Thai summary of this file.
+> This English version is the source of truth; the Thai one is shorter and links
+> back here for detail.
+
 Apache Airflow **3.x** examples, mostly file transfer: uploading to an FTPS
 server, waiting on a file with a sensor, and streaming between servers, object
 stores and SMB shares — every direction across FTPS, SFTP, SMB, Azure Blob and
