@@ -8,7 +8,7 @@ Apache Airflow **3.x** examples, mostly file transfer: uploading to an FTPS
 server, waiting on a file with a sensor, and streaming between servers, object
 stores and SMB shares — every direction across FTPS, SFTP, SMB, Azure Blob and
 S3, none of it staged on disk. Plus a queue producer/consumer pair, a deadline
-alert, a cyclic schedule, and two that combine a cycle with a transfer.
+alert, two that combine a cycle with a transfer, and one on date arithmetic.
 
 They also work through a progression in **how much of a provider you reuse**:
 
@@ -110,6 +110,7 @@ direction.** FTPS→Blob (#5) needs an `os.pipe()`; Blob→FTPS (#8) does not.
 | [21](#21-dag_cyclicpydag_cyclicpy) | `dag_cyclic.py` | non-overlapping scheduled runs |
 | [22](#22-dag_cyclic_check_s3_transfer_sftppydag_cyclic_check_s3_transfer_sftppy) | `dag_cyclic_check_s3_transfer_sftp.py` | a business-hours cycle that skips quietly when there is nothing to do |
 | [23](#23-dag_cyclic_check_blob_transfer_smbpydag_cyclic_check_blob_transfer_smbpy) | `dag_cyclic_check_blob_transfer_smb.py` | the same cycle on Azure — where the archive copy is *asynchronous* |
+| [24](#24-dag_logical_date_pattern_for_ordate_datepydag_logical_date_pattern_for_ordate_datepy) | `dag_logical_date_pattern_for_ordate_date.py` | mapping a logical date to a Control-M ODATE |
 
 ---
 
@@ -142,6 +143,7 @@ The DAGs build on each other. Run top to bottom the first time.
 | 21 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
 | 22 | [`dag_cyclic_check_s3_transfer_sftp.py`](dag_cyclic_check_s3_transfer_sftp.py) | a cycle that polls, then transfers only if there is work | objects in the S3 bucket (#10 writes one) |
 | 23 | [`dag_cyclic_check_blob_transfer_smb.py`](dag_cyclic_check_blob_transfer_smb.py) | the same cycle, where the archive copy is asynchronous | blobs in the container (#4 or #5 writes one) |
+| 24 | [`dag_logical_date_pattern_for_ordate_date.py`](dag_logical_date_pattern_for_ordate_date.py) | logical date → Control-M ODATE, and its parts | — |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -161,7 +163,7 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#17 and #21 need no connection at all.** #21, #22 and #23 are the only
+**#17, #21 and #24 need no connection at all.** #21, #22, #23 and #24 are the
 scheduled DAGs here — everything else is manual-trigger only. #22 and #23 do need
 their connections, and unlike #21 they are real pipelines rather than a `sleep`.
 Read them as a pair: same cyclic skeleton, and every difference between them comes
@@ -545,10 +547,27 @@ hands you directory prefixes as if they were files.
 
 ---
 
+## 24. [`dag_logical_date_pattern_for_ordate_date.py`](dag_logical_date_pattern_for_ordate_date.py)
+
+`nix-dag-logical-date-pattern-for-odate` — converts an Airflow logical date to a
+Control-M **ODATE**, and pulls year/month/day out of it. Includes the full
+Control-M-variable-to-Jinja mapping (`%%$ODATE`, `%%$YEAR`, `%%PREV`, `%%SUBSTR`).
+
+**Teaches:** ODATE and `logical_date` differ **by one day** for a daily job, and
+picking the wrong one shifts every partition silently. Also that
+`logical_date.strftime(...)` — the obvious translation — raises on a manual run,
+because `logical_date` is `None` there in Airflow 3.
+
+The only DAG here that needs **no connections at all**.
+
+→ **[Full detail: `docs/dag_logical_date_pattern_for_ordate_date.md`](docs/dag_logical_date_pattern_for_ordate_date.md)**  ·  📄 **[Source: `dag_logical_date_pattern_for_ordate_date.py`](dag_logical_date_pattern_for_ordate_date.py)**
+
+---
+
 ## Running them
 
-All except #21, #22 and #23 are manual-trigger. From the UI use **Trigger DAG
-w/ config**; from the CLI:
+All except #21, #22, #23 and #24 are manual-trigger. From the UI use **Trigger
+DAG w/ config**; from the CLI:
 
 ```bash
 airflow dags unpause <dag_id>          # new DAGs land paused
@@ -583,6 +602,7 @@ the default fixture on the left and a larger file on the right.
 | 21 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
 | 22 | `airflow dags unpause nix-dag-cyclic-check-s3-transfer-sftp` — scheduled; to force one cycle: `airflow dags trigger nix-dag-cyclic-check-s3-transfer-sftp --conf '{"prefix":"incoming/","suffix":".csv"}'` |
 | 23 | `airflow dags unpause nix-dag-cyclic-check-blob-transfer-smb` — scheduled; to force one cycle: `airflow dags trigger nix-dag-cyclic-check-blob-transfer-smb --conf '{"prefix":"incoming/","suffix":".csv"}'` |
+| 24 | `airflow dags unpause nix-dag-logical-date-pattern-for-odate` — scheduled; to pin a date: `airflow dags trigger nix-dag-logical-date-pattern-for-odate --conf '{"odate":"20260821"}'` |
 
 ### Testing with a large file
 

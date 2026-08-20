@@ -7,8 +7,8 @@
 อัปโหลดขึ้น FTPS, ใช้ sensor รอไฟล์, ไปจนถึงการ stream ไฟล์ระหว่างเซิร์ฟเวอร์
 object storage และ SMB share — ครบทุกทิศทางระหว่าง FTPS, SFTP, SMB, Azure Blob
 และ S3 โดย**ไม่มีการเขียนไฟล์ลงดิสก์ของ worker pod เลย** นอกจากนี้ยังมีคู่ producer/consumer
-ของ queue, deadline alert, cyclic schedule และอีก 2 ตัวที่รวม cyclic schedule
-เข้ากับงานรับส่งไฟล์
+ของ queue, deadline alert, cyclic schedule, อีก 2 ตัวที่รวม cyclic schedule
+เข้ากับงานรับส่งไฟล์ และอีก 1 ตัวที่ว่าด้วยการคำนวณวันที่
 
 DAG เหล่านี้ยังไล่ระดับให้เห็นว่า **ควรใช้ของที่ provider มีให้มากแค่ไหน**:
 
@@ -78,6 +78,7 @@ DAG แต่ละตัวเป็น **ไฟล์เดียวจบ** �
 | 21 | `dag_cyclic.py` | schedule ที่ไม่ให้ run ซ้อนกัน |
 | 22 | `dag_cyclic_check_s3_transfer_sftp.py` | cyclic ตามเวลาทำการ ที่ข้ามรอบอย่างเงียบ ๆ เมื่อไม่มีงาน |
 | 23 | `dag_cyclic_check_blob_transfer_smb.py` | cyclic แบบเดียวกันบน Azure ที่การ copy เป็นแบบ *asynchronous* |
+| 24 | `dag_logical_date_pattern_for_ordate_date.py` | แปลง logical date เป็น ODATE ของ Control-M |
 
 ---
 
@@ -110,12 +111,13 @@ DAG เหล่านี้ต่อยอดกัน ครั้งแรก
 | 21 | `dag_cyclic.py` | run ตามเวลาโดยไม่ซ้อนกัน | — |
 | 22 | `dag_cyclic_check_s3_transfer_sftp.py` | cyclic ที่ตรวจก่อน แล้วค่อยส่งเมื่อมีไฟล์จริง | object ใน bucket (#10 สร้างให้ได้) |
 | 23 | `dag_cyclic_check_blob_transfer_smb.py` | cyclic แบบเดียวกัน ที่การ copy สำหรับ archive เป็น asynchronous | blob ใน container (#4 หรือ #5 สร้างให้ได้) |
+| 24 | `dag_logical_date_pattern_for_ordate_date.py` | แปลง logical date เป็น ODATE ของ Control-M พร้อมแยก ปี/เดือน/วัน | — |
 
 **เริ่มที่ #1** เพราะ #2 และ #3 ต้องการไฟล์ที่ #1 อัปโหลดไว้ก่อน ถ้ารันสลับลำดับ
 sensor จะรอจนหมดเวลา และ transfer จะ fail ว่า "not found"
 
-**#21 ไม่ต้องใช้ connection ใด ๆ** ส่วน #21, #22 และ #23 เป็นสามตัวที่ทำงานตาม
-schedule ที่เหลือต้อง trigger เอง โดย #22 และ #23 ต้องใช้ connection ของตัวเอง และ
+**#17, #21 และ #24 ไม่ต้องใช้ connection ใด ๆ** ส่วน #21, #22, #23 และ #24
+ทำงานตาม schedule ที่เหลือต้อง trigger เอง โดย #22 และ #23 ต้องใช้ connection ของตัวเอง และ
 เป็น pipeline จริง ไม่ใช่แค่ `sleep` แบบ #21 — ควรอ่านคู่กัน เพราะโครง cyclic
 เหมือนกันทุกอย่าง ความต่างทั้งหมดมาจากฝั่ง storage ไม่ใช่ฝั่ง schedule
 
@@ -160,7 +162,7 @@ connection ที่ไม่ระบุ region จะใช้งานไม�
 
 ## วิธีรัน
 
-ทุกตัวยกเว้น #21, #22 และ #23 ต้อง trigger เอง
+ทุกตัวยกเว้น #21, #22, #23 และ #24 ต้อง trigger เอง
 
 ```bash
 airflow dags unpause <dag_id>          # DAG ใหม่จะถูก pause ไว้เสมอ
@@ -381,6 +383,7 @@ airflow dags list-import-errors
 | 21 | `dag_cyclic.py` | [docs](docs/dag_cyclic.md) |
 | 22 | `dag_cyclic_check_s3_transfer_sftp.py` | [docs](docs/dag_cyclic_check_s3_transfer_sftp.md) |
 | 23 | `dag_cyclic_check_blob_transfer_smb.py` | [docs](docs/dag_cyclic_check_blob_transfer_smb.md) |
+| 24 | `dag_logical_date_pattern_for_ordate_date.py` | [docs](docs/dag_logical_date_pattern_for_ordate_date.md) |
 
 ---
 
