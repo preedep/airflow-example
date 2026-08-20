@@ -191,6 +191,37 @@ its place when the date drives real logic.
 
 ---
 
+## Verifying it locally
+
+`airflow dags test` runs every task for real, and is the quickest way to see the
+mapping render:
+
+```bash
+airflow dags test nix-dag-logical-date-pattern-for-odate 2026-08-21
+```
+
+```
+ds_nodash (logical)      = 20260821
+ODATE (interval end)     = 20260821
+--- Control-M equivalents ---
+%%$YEAR                  = 2026
+%%PREV                   = 20260820
+%%SUBSTR %%PREV 5 2      = 08
+```
+
+**One caveat that will confuse you.** `dags test` synthesizes a run whose
+`data_interval_start` and `data_interval_end` are the *same instant*, so ODATE and
+the logical date come out equal and `compare_with_logical_date` reports
+`differ: False`. That is an artifact of the test harness, not the DAG — on a real
+scheduled run the interval is a full day wide and they differ by one, which is the
+whole point. Unpause it and let one fire to see the gap.
+
+The `\$` in the Bash task's `%%$YEAR` line is deliberate: without it bash expands
+`$YEAR` to an empty variable and the log shows `%%  = 2026`, losing the literal
+Control-M token the line exists to print.
+
+---
+
 ## Requires
 
 Nothing — no connections, no Variables. That makes this the easiest DAG here to run

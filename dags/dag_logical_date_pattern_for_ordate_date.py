@@ -405,7 +405,9 @@ so rather than inventing one.
             'echo "via macros.ds_format     = '
             '{{ macros.ds_format(ds, \'%Y-%m-%d\', \'%Y%m%d\') }}"; '
             'echo "--- Control-M equivalents ---"; '
-            'echo "%%$YEAR                  = {{ ds[:4] }}"; '
+            # \$ so bash does not expand $YEAR to an empty variable — the
+            # literal Control-M token is the whole point of the line.
+            'echo "%%\\$YEAR                  = {{ ds[:4] }}"; '
             'echo "%%MONTH                  = {{ ds[5:7] }}"; '
             'echo "%%DAY                    = {{ ds[8:10] }}"; '
             'echo "%%PREV                   = '
