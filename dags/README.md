@@ -7,8 +7,8 @@
 Apache Airflow **3.x** examples, mostly file transfer: uploading to an FTPS
 server, waiting on a file with a sensor, and streaming between servers, object
 stores and SMB shares — every direction across FTPS, SFTP, SMB, Azure Blob and
-S3, none of it staged on disk. Plus three that are not transfers: a queue
-producer/consumer pair, a deadline alert, and a cyclic schedule.
+S3, none of it staged on disk. Plus a queue producer/consumer pair, a deadline
+alert, a cyclic schedule, and two that combine a cycle with a transfer.
 
 They also work through a progression in **how much of a provider you reuse**:
 
@@ -16,9 +16,9 @@ They also work through a progression in **how much of a provider you reuse**:
 |---|---|
 | use an operator as shipped | #1, #18 |
 | extend a sensor or swap a hook | #2, #7, #9 |
-| override one method of a transfer operator | #4, #11, #14 |
+| override one method of a transfer operator | #4, #11, #14, #22 |
 | fix a *behaviour*, not the plumbing | #16 — the provider streams, but forgets `prefetch` |
-| write an operator from scratch | #5, #6, #8, #12, #13 |
+| write an operator from scratch | #5, #6, #8, #12, #13, #23 |
 
 The [class table](#classes-defined-in-these-dags) below maps each one to its
 file. The lesson repeated across them: **read the provider class before
@@ -88,8 +88,8 @@ Every one streams; none writes the payload to the worker pod's disk.
 | **local** | [1](#1-dag_ftps_simple_transferpydag_ftps_simple_transferpy) | — | — | — | — |
 | **FTPS** | — | [3](#3-dag_ftps_to_sftp_stream_transferpydag_ftps_to_sftp_stream_transferpy) | — | [5](#5-dag_ftps_to_blob_streampydag_ftps_to_blob_streampy) | — |
 | **SFTP** | — | — | — | [4](#4-dag_sftp_to_blob_streampydag_sftp_to_blob_streampy) | [16](#16-dag_sftp_to_s3_streampydag_sftp_to_s3_streampy) |
-| **Blob** | [8](#8-dag_blob_to_ftps_streampydag_blob_to_ftps_streampy) | [6](#6-dag_blob_to_sftp_streampydag_blob_to_sftp_streampy) | [12](#12-dag_blob_to_smb_streampydag_blob_to_smb_streampy) | — | [10](#10-dag_blob_to_s3_streampydag_blob_to_s3_streampy) |
-| **S3** | [15](#15-dag_s3_to_ftps_streampydag_s3_to_ftps_streampy) | [14](#14-dag_s3_to_sftp_streampydag_s3_to_sftp_streampy) | [13](#13-dag_s3_to_smb_streampydag_s3_to_smb_streampy) | [11](#11-dag_s3_to_blob_streampydag_s3_to_blob_streampy) | — |
+| **Blob** | [8](#8-dag_blob_to_ftps_streampydag_blob_to_ftps_streampy) | [6](#6-dag_blob_to_sftp_streampydag_blob_to_sftp_streampy) | [12](#12-dag_blob_to_smb_streampydag_blob_to_smb_streampy), [23](#23-dag_cyclic_check_blob_transfer_smbpydag_cyclic_check_blob_transfer_smbpy) | — | [10](#10-dag_blob_to_s3_streampydag_blob_to_s3_streampy) |
+| **S3** | [15](#15-dag_s3_to_ftps_streampydag_s3_to_ftps_streampy) | [14](#14-dag_s3_to_sftp_streampydag_s3_to_sftp_streampy), [22](#22-dag_cyclic_check_s3_transfer_sftppydag_cyclic_check_s3_transfer_sftppy) | [13](#13-dag_s3_to_smb_streampydag_s3_to_smb_streampy) | [11](#11-dag_s3_to_blob_streampydag_s3_to_blob_streampy) | — |
 
 Reading a row against its column is the fastest way to see the repo's recurring
 lesson: **the same pair of endpoints needs different plumbing depending on
@@ -108,6 +108,8 @@ direction.** FTPS→Blob (#5) needs an `os.pipe()`; Blob→FTPS (#8) does not.
 |---|---|---|
 | [17](#17-dag_deadline_alertpydag_deadline_alertpy) | `dag_deadline_alert.py` | alert on a slow run **without** failing it |
 | [21](#21-dag_cyclicpydag_cyclicpy) | `dag_cyclic.py` | non-overlapping scheduled runs |
+| [22](#22-dag_cyclic_check_s3_transfer_sftppydag_cyclic_check_s3_transfer_sftppy) | `dag_cyclic_check_s3_transfer_sftp.py` | a business-hours cycle that skips quietly when there is nothing to do |
+| [23](#23-dag_cyclic_check_blob_transfer_smbpydag_cyclic_check_blob_transfer_smbpy) | `dag_cyclic_check_blob_transfer_smb.py` | the same cycle on Azure — where the archive copy is *asynchronous* |
 
 ---
 
@@ -138,6 +140,8 @@ The DAGs build on each other. Run top to bottom the first time.
 | 19 | [`dag_sqs_producer.py`](dag_sqs_producer.py) | trigger another DAG and wait for it | an SQS queue |
 | 20 | [`dag_sqs_consumer.py`](dag_sqs_consumer.py) | consume a queue; driven by #19 | messages from #19 |
 | 21 | [`dag_cyclic.py`](dag_cyclic.py) | non-overlapping scheduled runs | — |
+| 22 | [`dag_cyclic_check_s3_transfer_sftp.py`](dag_cyclic_check_s3_transfer_sftp.py) | a cycle that polls, then transfers only if there is work | objects in the S3 bucket (#10 writes one) |
+| 23 | [`dag_cyclic_check_blob_transfer_smb.py`](dag_cyclic_check_blob_transfer_smb.py) | the same cycle, where the archive copy is asynchronous | blobs in the container (#4 or #5 writes one) |
 
 **Start with #1.** It uploads a file to the FTPS server. Both #2 and #3 expect a
 file to already be there, so running them first means the sensor waits out its
@@ -157,8 +161,11 @@ property of the *call*, not the protocol — #5 and #8 both speak FTPS, and only
 #5 needs the pipe. The comparison table across all four directions is in
 [`docs/dag_blob_to_sftp_stream.md`](docs/dag_blob_to_sftp_stream.md).
 
-**#17 and #21 need no connection at all** and is the only scheduled DAG here; the rest are
-manual-trigger only.
+**#17 and #21 need no connection at all.** #21, #22 and #23 are the only
+scheduled DAGs here — everything else is manual-trigger only. #22 and #23 do need
+their connections, and unlike #21 they are real pipelines rather than a `sleep`.
+Read them as a pair: same cyclic skeleton, and every difference between them comes
+from the storage services rather than the scheduling.
 
 ---
 
@@ -169,7 +176,7 @@ module. Use this table to find a worked example of the pattern you need.
 
 | Class | In | Extends | Why it exists |
 |---|---|---|---|
-| `MyFTPSHook` | [#1, #2, #3, #5, #8](docs/dag_ftps_simple_transfer.md) | `FTPSHook` | Trust a private CA and call `prot_p()`; the stock hook can do neither |
+| `MyFTPSHook` | [#1, #2, #3, #5, #8, #15](docs/dag_ftps_simple_transfer.md) | `FTPSHook` | Trust a private CA and call `prot_p()`; the stock hook can do neither |
 | `MyFTPSFileTransmitOperator` | [#1](docs/dag_ftps_simple_transfer.md) | `FTPSFileTransmitOperator` | Swap in the custom hook, keep the operator |
 | `MyFTPSSensor` | [#2](docs/dag_ftps_sensor.md) | `FTPSSensor` | Same swap, for the sensor |
 | `StreamingSFTPToWasbOperator` | [#4](docs/dag_sftp_to_blob_stream.md) | `SFTPToWasbOperator` | Override one method so files stream instead of staging on disk |
@@ -180,8 +187,9 @@ module. Use this table to find a worked example of the pattern you need.
 | `BlobToS3StreamOperator` | [#10](docs/dag_blob_to_s3_stream.md) | `BaseOperator` | No provider Blob → S3 transfer exists; `s3_to_wasb` points the other way |
 | `StreamingS3ToAzureBlobStorageOperator` | [#11](docs/dag_s3_to_blob_stream.md) | `S3ToAzureBlobStorageOperator` | Override one method so objects stream instead of staging on disk |
 | `BlobToSMBStreamOperator` | [#12](docs/dag_blob_to_smb_stream.md) | `BaseOperator` | No provider Blob → SMB transfer exists |
+| `CyclicBlobToSMBStreamOperator` | [#23](docs/dag_cyclic_check_blob_transfer_smb.md) | `BaseOperator` | #12's transfer for a discovered *batch*, archiving each blob — and polling Azure's asynchronous copy before deleting the source |
 | `S3ToSMBStreamOperator` | [#13](docs/dag_s3_to_smb_stream.md) | `BaseOperator` | No provider S3 → SMB transfer exists |
-| `StreamingS3ToSFTPOperator` | [#14](docs/dag_s3_to_sftp_stream.md) | `S3ToSFTPOperator` | Override `execute` so objects stream instead of staging on disk |
+| `StreamingS3ToSFTPOperator` | [#14](docs/dag_s3_to_sftp_stream.md), [#22](docs/dag_cyclic_check_s3_transfer_sftp.md) | `S3ToSFTPOperator` | Override `execute` so objects stream instead of staging on disk. #22 carries its own copy, extended to move a discovered *batch* and archive each key |
 | `StreamingS3ToFTPSOperator` | [#15](docs/dag_s3_to_ftps_stream.md) | `S3ToFTPOperator` | Stream *and* swap the hardcoded plain-FTP hook for FTPS |
 | `StreamingSFTPToS3Operator` | [#16](docs/dag_sftp_to_s3_stream.md) | `SFTPToS3Operator` | Add the `prefetch` the provider omits — 4.8x on 50 MiB |
 | `S3PrefixSuffixSensor` | [#9](docs/dag_s3_prefix_suffix_sensor.md) | `S3KeySensor` | Collect every match and push it to XCom; the stock sensor pushes nothing |
@@ -199,8 +207,9 @@ provider ships `sftp_to_wasb`, `s3_to_wasb`, `local_to_wasb` and
 `oracle_to_azure_data_lake`, but nothing in the FTP/FTPS direction and nothing
 *out of* Blob Storage. Those gaps are why three operators here start from scratch.
 
-> `MyFTPSHook` appears in five files. That duplication is deliberate — each DAG
-> is a standalone single file, as noted at the top.
+> `MyFTPSHook` appears in six files and `StreamingS3ToSFTPOperator` in two. That
+> duplication is deliberate — each DAG is a standalone single file, as noted at the
+> top.
 
 ---
 
@@ -507,10 +516,39 @@ messages are gone before your downstream task runs.
 
 ---
 
+## 22. [`dag_cyclic_check_s3_transfer_sftp.py`](dag_cyclic_check_s3_transfer_sftp.py)
+
+`nix-dag-cyclic-check-s3-transfer-sftp` — every 5 minutes on weekdays 08:00–19:00,
+streams anything waiting in an S3 prefix out to the SFTP server.
+
+**Teaches:** a cyclic poll wants a **short-circuit, not a sensor** — an empty
+prefix is a quiet success, not a timeout. Also what a repeating transfer owes you
+that a one-shot does not: archive-after-transfer, so the next cycle does not
+re-send the same object.
+
+→ **[Full detail: `docs/dag_cyclic_check_s3_transfer_sftp.md`](docs/dag_cyclic_check_s3_transfer_sftp.md)**  ·  📄 **[Source: `dag_cyclic_check_s3_transfer_sftp.py`](dag_cyclic_check_s3_transfer_sftp.py)**
+
+---
+
+## 23. [`dag_cyclic_check_blob_transfer_smb.py`](dag_cyclic_check_blob_transfer_smb.py)
+
+`nix-dag-cyclic-check-blob-transfer-smb` — #22's cycle with both endpoints swapped:
+every 5 minutes on weekdays 08:00–19:00, streams anything waiting in a blob prefix
+onto an SMB share.
+
+**Teaches:** the scheduling half of #22 ports over unchanged and the *storage* half
+does not. Azure's copy is **asynchronous**, so archive-then-delete has to poll or it
+races the copy and loses data; and `get_blobs_list` is a *hierarchical* listing that
+hands you directory prefixes as if they were files.
+
+→ **[Full detail: `docs/dag_cyclic_check_blob_transfer_smb.md`](docs/dag_cyclic_check_blob_transfer_smb.md)**  ·  📄 **[Source: `dag_cyclic_check_blob_transfer_smb.py`](dag_cyclic_check_blob_transfer_smb.py)**
+
+---
+
 ## Running them
 
-All except #21 are manual-trigger. From the UI use **Trigger DAG w/ config**; from
-the CLI:
+All except #21, #22 and #23 are manual-trigger. From the UI use **Trigger DAG
+w/ config**; from the CLI:
 
 ```bash
 airflow dags unpause <dag_id>          # new DAGs land paused
@@ -543,6 +581,8 @@ the default fixture on the left and a larger file on the right.
 | 19 | `airflow dags trigger nix-dag-sqs-producer --conf '{"message_count":3,"batch_label":"demo"}'` |
 | 20 | *(not triggered directly — #19 does it)*; to run alone: `airflow dags trigger nix-dag-sqs-consumer` |
 | 21 | `airflow dags unpause nix-dag-cyclic` — scheduled, not triggered |
+| 22 | `airflow dags unpause nix-dag-cyclic-check-s3-transfer-sftp` — scheduled; to force one cycle: `airflow dags trigger nix-dag-cyclic-check-s3-transfer-sftp --conf '{"prefix":"incoming/","suffix":".csv"}'` |
+| 23 | `airflow dags unpause nix-dag-cyclic-check-blob-transfer-smb` — scheduled; to force one cycle: `airflow dags trigger nix-dag-cyclic-check-blob-transfer-smb --conf '{"prefix":"incoming/","suffix":".csv"}'` |
 
 ### Testing with a large file
 
