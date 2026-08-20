@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
@@ -201,6 +202,26 @@ BUSINESS_TIMEZONE = "Asia/Bangkok"
 
 ODATE_FORMAT = "%Y%m%d"
 
+# Jinja expressions used by the template task, defined once here so the fallback
+# rule matches the callable's.
+#
+# `ds` is deliberately NOT the base: on a manual run logical_date is None, so
+# `ds` is absent from the context entirely and `{{ ds[:4] }}` raises
+# UndefinedError. `data_interval_end` is None there too. `dag_run.run_after` is
+# always set, so it is the last resort — the same chain _resolve_odate_datetime
+# walks.
+# `| default(none, true)` is load-bearing: on a manual run data_interval_end is
+# *undefined*, not None, so a bare `or` raises UndefinedError before the
+# fallback is ever reached.
+_ODATE_DT = "(data_interval_end | default(none, true) or dag_run.run_after)"
+_ODATE_LOCAL_DT = f'{_ODATE_DT}.astimezone(macros.dateutil.tz.gettz("{BUSINESS_TIMEZONE}"))'
+
+ODATE_LOCAL_EXPR = f'{_ODATE_LOCAL_DT}.strftime("%Y%m%d")'
+PREV_EXPR = f'({_ODATE_LOCAL_DT} - macros.timedelta(days=1)).strftime("%Y%m%d")'
+
+ODATE_TMPL = "{{ " + f'{_ODATE_DT}.strftime("%Y%m%d")' + " }}"
+ODATE_LOCAL_TMPL = "{{ " + ODATE_LOCAL_EXPR + " }}"
+
 
 # --------------------------------------------------------------------------- #
 # Task callables
@@ -247,7 +268,11 @@ def get_odate_parts(ti=None, **context):
     # A conf-supplied ODATE is naive and already a business date, so converting
     # it would shift the very value the operator pinned.
     if BUSINESS_TIMEZONE != "UTC" and odate_dt.tzinfo is not None:
-        odate_dt = odate_dt.in_timezone(BUSINESS_TIMEZONE)
+        # astimezone + ZoneInfo, not pendulum's .in_timezone(): the dates in
+        # context are pendulum instances but dag_run.run_after comes back as a
+        # plain datetime.datetime, which has no .in_timezone. Using it fails at
+        # runtime on exactly the manual run the fallback exists to serve.
+        odate_dt = odate_dt.astimezone(ZoneInfo(BUSINESS_TIMEZONE))
 
     odate = odate_dt.strftime(ODATE_FORMAT)
 
@@ -391,30 +416,28 @@ so rather than inventing one.
         task_id="show_odate_in_template",
         # No callable needed to format a date. ds_nodash IS the YYYYMMDD of the
         # logical date; the filter form applies it to any datetime in context.
+        # Every date here is resolved through ODATE_TMPL rather than `ds`.
+        # On a manual run logical_date is None, so `ds` is not in the context at
+        # all and `{{ ds[:4] }}` raises UndefinedError — the same failure mode as
+        # logical_date.strftime, one level down. dag_run.run_after is always set.
         bash_command=(
-            'echo "ds                       = {{ ds }}"; '
-            'echo "ds_nodash (logical)      = {{ ds_nodash }}"; '
-            'echo "data_interval_start      = {{ data_interval_start }}"; '
-            'echo "data_interval_end        = {{ data_interval_end }}"; '
-            'echo "ODATE (interval end)     = {{ data_interval_end | ds_nodash }}"; '
-            'echo "ODATE (business tz)      = '
-            '{{ data_interval_end.in_timezone("' + BUSINESS_TIMEZONE + '") | ds_nodash }}"; '
-            'echo "year/month/day           = {{ data_interval_end.year }} '
-            '{{ \'%02d\' % data_interval_end.month }} '
-            '{{ \'%02d\' % data_interval_end.day }}"; '
-            'echo "via macros.ds_format     = '
-            '{{ macros.ds_format(ds, \'%Y-%m-%d\', \'%Y%m%d\') }}"; '
+            'echo "run_id                   = {{ run_id }}"; '
+            'echo "ds (None on manual)      = {{ ds | default(\'<undefined>\', true) }}"; '
+            'echo "data_interval_end        = '
+            '{{ data_interval_end | default(\'<none>\', true) }}"; '
+            'echo "--- ODATE ---"; '
+            'echo "ODATE                    = ' + ODATE_TMPL + '"; '
+            'echo "ODATE (business tz)      = ' + ODATE_LOCAL_TMPL + '"; '
             'echo "--- Control-M equivalents ---"; '
             # \$ so bash does not expand $YEAR to an empty variable — the
             # literal Control-M token is the whole point of the line.
-            'echo "%%\\$YEAR                  = {{ ds[:4] }}"; '
-            'echo "%%MONTH                  = {{ ds[5:7] }}"; '
-            'echo "%%DAY                    = {{ ds[8:10] }}"; '
-            'echo "%%PREV                   = '
-            '{{ macros.ds_format(macros.ds_add(ds, -1), \'%Y-%m-%d\', \'%Y%m%d\') }}"; '
-            'echo "%%SUBSTR %%PREV 1 4      = {{ macros.ds_add(ds, -1)[:4] }}"; '
-            'echo "%%SUBSTR %%PREV 5 2      = {{ macros.ds_add(ds, -1)[5:7] }}"; '
-            'echo "%%SUBSTR %%PREV 7 2      = {{ macros.ds_add(ds, -1)[8:10] }}"'
+            'echo "%%\\$YEAR                  = {{ (' + ODATE_LOCAL_EXPR + ')[:4] }}"; '
+            'echo "%%MONTH                  = {{ (' + ODATE_LOCAL_EXPR + ')[4:6] }}"; '
+            'echo "%%DAY                    = {{ (' + ODATE_LOCAL_EXPR + ')[6:8] }}"; '
+            'echo "%%PREV                   = {{ (' + PREV_EXPR + ') }}"; '
+            'echo "%%SUBSTR %%PREV 1 4      = {{ (' + PREV_EXPR + ')[:4] }}"; '
+            'echo "%%SUBSTR %%PREV 5 2      = {{ (' + PREV_EXPR + ')[4:6] }}"; '
+            'echo "%%SUBSTR %%PREV 7 2      = {{ (' + PREV_EXPR + ')[6:8] }}"'
         ),
         doc_md="""
 The same conversion in **Jinja**, with no Python at all — printed so the two
