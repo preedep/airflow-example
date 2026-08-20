@@ -6,9 +6,9 @@
 ตัวอย่างการเขียน DAG บน Apache Airflow **3.x** ส่วนใหญ่เป็นงานรับส่งไฟล์ ตั้งแต่
 อัปโหลดขึ้น FTPS, ใช้ sensor รอไฟล์, ไปจนถึงการ stream ไฟล์ระหว่างเซิร์ฟเวอร์
 object storage และ SMB share — ครบทุกทิศทางระหว่าง FTPS, SFTP, SMB, Azure Blob
-และ S3 โดย**ไม่มีการเขียนไฟล์ลงดิสก์ของ worker pod เลย** นอกจากนี้ยังมีอีก 3 ตัวที่
-ไม่ใช่งานรับส่งไฟล์ ได้แก่ คู่ producer/consumer ของ queue, deadline alert และ
-cyclic schedule
+และ S3 โดย**ไม่มีการเขียนไฟล์ลงดิสก์ของ worker pod เลย** นอกจากนี้ยังมีคู่ producer/consumer
+ของ queue, deadline alert, cyclic schedule และอีก 2 ตัวที่รวม cyclic schedule
+เข้ากับงานรับส่งไฟล์
 
 DAG เหล่านี้ยังไล่ระดับให้เห็นว่า **ควรใช้ของที่ provider มีให้มากแค่ไหน**:
 
@@ -16,9 +16,9 @@ DAG เหล่านี้ยังไล่ระดับให้เห็�
 |---|---|
 | ใช้ operator ตามที่ provider ให้มาเลย | #1, #18 |
 | สืบทอด sensor หรือสลับ hook | #2, #7, #9 |
-| override เพียง method เดียวของ transfer operator | #4, #11, #14 |
+| override เพียง method เดียวของ transfer operator | #4, #11, #14, #22 |
 | แก้ที่ *พฤติกรรม* ไม่ใช่ที่ท่อส่งข้อมูล | #16 — provider stream อยู่แล้ว แต่ลืม `prefetch` |
-| เขียน operator ใหม่ทั้งตัว | #5, #6, #8, #12, #13 |
+| เขียน operator ใหม่ทั้งตัว | #5, #6, #8, #12, #13, #23 |
 
 บทเรียนที่พบซ้ำ ๆ คือ **อ่านโค้ดของ provider ก่อนตัดสินใจ extend** — บางตัวแก้แค่
 method เดียวก็พอ บางตัวไม่ต้องแก้อะไรเลย และบางตัว hook ถูก hardcode ไว้จนต้อง
@@ -56,8 +56,8 @@ DAG แต่ละตัวเป็น **ไฟล์เดียวจบ** �
 | **local** | 1 | — | — | — | — |
 | **FTPS** | — | 3 | — | 5 | — |
 | **SFTP** | — | — | — | 4 | 16 |
-| **Blob** | 8 | 6 | 12 | — | 10 |
-| **S3** | 15 | 14 | 13 | 11 | — |
+| **Blob** | 8 | 6 | 12, 23 | — | 10 |
+| **S3** | 15 | 14, 22 | 13 | 11 | — |
 
 อ่านตารางนี้ตามแถวเทียบกับคอลัมน์ จะเห็นบทเรียนสำคัญของ repo นี้ทันที:
 **ปลายทางคู่เดียวกันแต่คนละทิศทาง ใช้วิธีต่อท่อไม่เหมือนกัน** เช่น FTPS→Blob (#5)
@@ -76,6 +76,8 @@ DAG แต่ละตัวเป็น **ไฟล์เดียวจบ** �
 |---|---|---|
 | 17 | `dag_deadline_alert.py` | แจ้งเตือนเมื่อ run ช้า **โดยไม่ทำให้ fail** |
 | 21 | `dag_cyclic.py` | schedule ที่ไม่ให้ run ซ้อนกัน |
+| 22 | `dag_cyclic_check_s3_transfer_sftp.py` | cyclic ตามเวลาทำการ ที่ข้ามรอบอย่างเงียบ ๆ เมื่อไม่มีงาน |
+| 23 | `dag_cyclic_check_blob_transfer_smb.py` | cyclic แบบเดียวกันบน Azure ที่การ copy เป็นแบบ *asynchronous* |
 
 ---
 
@@ -106,12 +108,16 @@ DAG เหล่านี้ต่อยอดกัน ครั้งแรก
 | 19 | `dag_sqs_producer.py` | trigger DAG อื่นแล้วรอจนเสร็จ | SQS queue |
 | 20 | `dag_sqs_consumer.py` | อ่าน queue โดยถูกสั่งจาก #19 | ข้อความจาก #19 |
 | 21 | `dag_cyclic.py` | run ตามเวลาโดยไม่ซ้อนกัน | — |
+| 22 | `dag_cyclic_check_s3_transfer_sftp.py` | cyclic ที่ตรวจก่อน แล้วค่อยส่งเมื่อมีไฟล์จริง | object ใน bucket (#10 สร้างให้ได้) |
+| 23 | `dag_cyclic_check_blob_transfer_smb.py` | cyclic แบบเดียวกัน ที่การ copy สำหรับ archive เป็น asynchronous | blob ใน container (#4 หรือ #5 สร้างให้ได้) |
 
 **เริ่มที่ #1** เพราะ #2 และ #3 ต้องการไฟล์ที่ #1 อัปโหลดไว้ก่อน ถ้ารันสลับลำดับ
 sensor จะรอจนหมดเวลา และ transfer จะ fail ว่า "not found"
 
-**#21 ไม่ต้องใช้ connection ใด ๆ** และเป็นตัวเดียวที่ทำงานตาม schedule ที่เหลือ
-ต้อง trigger เอง
+**#21 ไม่ต้องใช้ connection ใด ๆ** ส่วน #21, #22 และ #23 เป็นสามตัวที่ทำงานตาม
+schedule ที่เหลือต้อง trigger เอง โดย #22 และ #23 ต้องใช้ connection ของตัวเอง และ
+เป็น pipeline จริง ไม่ใช่แค่ `sleep` แบบ #21 — ควรอ่านคู่กัน เพราะโครง cyclic
+เหมือนกันทุกอย่าง ความต่างทั้งหมดมาจากฝั่ง storage ไม่ใช่ฝั่ง schedule
 
 ---
 
@@ -154,7 +160,7 @@ connection ที่ไม่ระบุ region จะใช้งานไม�
 
 ## วิธีรัน
 
-ทุกตัวยกเว้น #21 ต้อง trigger เอง
+ทุกตัวยกเว้น #21, #22 และ #23 ต้อง trigger เอง
 
 ```bash
 airflow dags unpause <dag_id>          # DAG ใหม่จะถูก pause ไว้เสมอ
@@ -373,6 +379,8 @@ airflow dags list-import-errors
 | 19 | `dag_sqs_producer.py` | [docs](docs/dag_sqs_producer.md) |
 | 20 | `dag_sqs_consumer.py` | [docs](docs/dag_sqs_consumer.md) |
 | 21 | `dag_cyclic.py` | [docs](docs/dag_cyclic.md) |
+| 22 | `dag_cyclic_check_s3_transfer_sftp.py` | [docs](docs/dag_cyclic_check_s3_transfer_sftp.md) |
+| 23 | `dag_cyclic_check_blob_transfer_smb.py` | [docs](docs/dag_cyclic_check_blob_transfer_smb.md) |
 
 ---
 
